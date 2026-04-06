@@ -88,10 +88,36 @@ HTML = r"""<!DOCTYPE html>
     100% { color: #ff0000; }
   }
 
+  /* ── Header rain container ── */
+  .header {
+    position: relative;
+    overflow: hidden;
+  }
+  .btc-rain {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .btc-symbol {
+    position: absolute;
+    top: 0;
+    font-family: 'Courier New', Courier, monospace;
+    animation: rainbow 3s linear infinite, fall linear infinite;
+    user-select: none;
+  }
+  @keyframes fall {
+    0%   { transform: translateY(-20px); opacity: 1; }
+    100% { transform: translateY(80px);  opacity: 0; }
+  }
+
+  /* ── Banner text (above rain layer) ── */
   .banner {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
+    position: relative;
+    z-index: 1;
   }
   .banner-title {
     font-size: 22px;
@@ -101,15 +127,6 @@ HTML = r"""<!DOCTYPE html>
     white-space: pre;
     animation: rainbow 3s linear infinite;
     text-shadow: 0 0 12px currentColor;
-  }
-  .banner-ascii {
-    font-size: 11px;
-    line-height: 1.2;
-    white-space: pre;
-    font-family: 'Courier New', Courier, monospace;
-    animation: rainbow 3s linear infinite;
-    animation-delay: -1s;
-    text-shadow: 0 0 8px currentColor;
   }
   .banner-dev {
     font-size: 11px;
@@ -338,11 +355,9 @@ HTML = r"""<!DOCTYPE html>
 
   <!-- HEADER -->
   <div class="header">
+    <div id="btc-rain" class="btc-rain"></div>
     <div class="banner">
       <div class="banner-title">&#x2592; BITCOINSONT15 &#x2592;</div>
-      <pre class="banner-ascii">&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x256C;
-&#x2551; K &#x2551; A &#x2551; V &#x2551;E&#x2551; R &#x2551; C &#x2551; O &#x2551;I&#x2551;N&#x2551;
-&#x255A;&#x2550;&#x2550;&#x2550;&#x255D;&#x2550;&#x2550;&#x2550;&#x255A;&#x2550;&#x2550;&#x2550;&#x255D;&#x2550;&#x2550;&#x255A;&#x2550;&#x2550;&#x2550;&#x255D;&#x2550;&#x2550;&#x2550;&#x255A;&#x2550;&#x2550;&#x2550;&#x255D;&#x2550;&#x2550;&#x255A;&#x2550;&#x2550;&#x255A;</pre>
       <div class="banner-dev">&#x25B8; dev: k4v3rs0nt</div>
     </div>
     <div class="header-right">
@@ -447,6 +462,33 @@ HTML = r"""<!DOCTYPE html>
 </div><!-- /container -->
 
 <script>
+// ── ₿ Rain generator ─────────────────────────────────────────────────────────
+(function() {
+  const rain = document.getElementById('btc-rain');
+  const COUNT = 15;
+  // Spread left positions evenly with slight jitter so columns don't overlap
+  for (let i = 0; i < COUNT; i++) {
+    const el = document.createElement('span');
+    el.className = 'btc-symbol';
+    el.textContent = '\u20bf';
+
+    const leftPct   = (i / COUNT * 100) + (Math.random() * 4 - 2); // 0–100% with ±2 jitter
+    const fontSize  = 12 + Math.random() * 12;                      // 12–24px
+    const duration  = 2 + Math.random() * 4;                        // 2–6s fall
+    const delay     = -(Math.random() * duration);                   // stagger start
+    const rbDelay   = -(Math.random() * 3);                         // random rainbow phase
+
+    el.style.cssText = [
+      `left: ${leftPct}%`,
+      `font-size: ${fontSize.toFixed(1)}px`,
+      `animation-duration: ${rbDelay.toFixed(2)}s, ${duration.toFixed(2)}s`,
+      `animation-delay: ${rbDelay.toFixed(2)}s, ${delay.toFixed(2)}s`,
+    ].join(';');
+
+    rain.appendChild(el);
+  }
+})();
+
 // ── Chart setup ──────────────────────────────────────────────────────────────
 const ctx = document.getElementById('priceChart').getContext('2d');
 
