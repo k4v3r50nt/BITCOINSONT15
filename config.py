@@ -10,6 +10,5 @@ INITIAL_BANKROLL = float(os.getenv("INITIAL_BANKROLL", "100.0"))
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.60"))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.05"))
 
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@kline_1m"
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
 WINDOW_SECONDS = 900  # 15 minutes
