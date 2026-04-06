@@ -1,0 +1,763 @@
+"""
+BITCOINSONT15 — Web Dashboard
+Flask + Flask-SocketIO server that runs in a background thread.
+Reads from SharedState (written by the asyncio bot) and pushes
+updates to connected browsers via SocketIO every second.
+"""
+
+import logging
+import os
+import threading
+import time
+from datetime import datetime
+from typing import Optional
+
+from flask import Flask, jsonify, render_template_string
+from flask_socketio import SocketIO
+
+from shared_state import SharedState
+
+logger = logging.getLogger(__name__)
+
+# ── Flask app setup ──────────────────────────────────────────────────────────
+
+app = Flask(__name__)
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "btcsont15-secret")
+
+# eventlet async_mode required for background threads + SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet", logger=False, engineio_logger=False)
+
+# Module-level state reference — set by start_web_dashboard()
+_state: Optional[SharedState] = None
+
+# ── HTML template ────────────────────────────────────────────────────────────
+
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BITCOINSONT15</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root {
+    --green:   #00ff41;
+    --green2:  #00cc33;
+    --red:     #ff3333;
+    --yellow:  #ffdd00;
+    --dim:     #1a1a1a;
+    --border:  #003311;
+    --bg:      #0a0a0a;
+    --card:    #0d0d0d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg);
+    color: var(--green);
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 14px;
+    min-height: 100vh;
+  }
+  a { color: var(--green2); }
+
+  /* ── Layout ── */
+  .container { max-width: 1400px; margin: 0 auto; padding: 16px; }
+
+  /* ── Header ── */
+  .header {
+    border: 1px solid var(--border);
+    padding: 16px 24px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    background: var(--card);
+  }
+  .logo {
+    font-size: 13px;
+    line-height: 1.15;
+    color: var(--green);
+    white-space: pre;
+    text-shadow: 0 0 8px #00ff4180;
+  }
+  .header-right { text-align: right; }
+  .badge-paper {
+    display: inline-block;
+    background: transparent;
+    border: 1px solid var(--yellow);
+    color: var(--yellow);
+    font-size: 12px;
+    padding: 2px 10px;
+    letter-spacing: 2px;
+    margin-bottom: 6px;
+  }
+  .bankroll {
+    font-size: 32px;
+    font-weight: bold;
+    letter-spacing: 1px;
+  }
+  .bankroll.up   { color: var(--green); text-shadow: 0 0 10px #00ff4160; }
+  .bankroll.down { color: var(--red);   text-shadow: 0 0 10px #ff333360; }
+  .bankroll-diff { font-size: 13px; opacity: 0.7; margin-top: 2px; }
+
+  /* ── Metric cards ── */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  @media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 500px) { .metrics { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    padding: 14px 18px;
+  }
+  .card-label {
+    font-size: 11px;
+    letter-spacing: 2px;
+    opacity: 0.5;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .card-value {
+    font-size: 28px;
+    font-weight: bold;
+    letter-spacing: 0.5px;
+    line-height: 1;
+  }
+  .card-sub { font-size: 12px; margin-top: 5px; opacity: 0.65; }
+  .up   { color: var(--green); }
+  .down { color: var(--red); }
+  .dim  { color: #555; }
+
+  /* ── Main grid: chart + signal ── */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  @media (max-width: 1000px) { .main-grid { grid-template-columns: 1fr; } }
+
+  /* ── Chart ── */
+  .chart-box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    padding: 16px;
+  }
+  .chart-box h3 {
+    font-size: 11px;
+    letter-spacing: 3px;
+    opacity: 0.5;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .chart-wrap { position: relative; height: 260px; }
+
+  /* ── Signal panel ── */
+  .signal-box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .signal-box h3 {
+    font-size: 11px;
+    letter-spacing: 3px;
+    opacity: 0.5;
+    text-transform: uppercase;
+  }
+  .window-slug {
+    font-size: 11px;
+    opacity: 0.4;
+    word-break: break-all;
+  }
+  .countdown {
+    font-size: 42px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    text-align: center;
+    color: var(--yellow);
+    text-shadow: 0 0 12px #ffdd0060;
+    line-height: 1;
+  }
+  .progress-bar-wrap {
+    background: #111;
+    border: 1px solid var(--border);
+    height: 8px;
+    width: 100%;
+    border-radius: 0;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: var(--green2);
+    transition: width 0.9s linear;
+    box-shadow: 0 0 6px var(--green2);
+  }
+  .signal-dir {
+    text-align: center;
+    font-size: 36px;
+    font-weight: bold;
+    padding: 8px 0;
+    letter-spacing: 3px;
+    border: 1px solid;
+    transition: all 0.3s;
+  }
+  .signal-dir.up   { color: var(--green); border-color: var(--green); text-shadow: 0 0 14px #00ff4180; }
+  .signal-dir.down { color: var(--red);   border-color: var(--red);   text-shadow: 0 0 14px #ff333360; }
+  .signal-dir.skip { color: #444;         border-color: #222; }
+
+  .conf-label { font-size: 11px; opacity: 0.5; letter-spacing: 2px; margin-bottom: 4px; }
+  .conf-bar-wrap { background: #111; border: 1px solid var(--border); height: 10px; }
+  .conf-bar-fill {
+    height: 100%;
+    background: var(--green2);
+    transition: width 0.5s ease;
+    box-shadow: 0 0 6px var(--green2);
+  }
+  .conf-pct { font-size: 20px; font-weight: bold; margin-top: 4px; }
+
+  .strat-row { display: flex; flex-direction: column; gap: 5px; }
+  .strat {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    padding: 3px 6px;
+    border: 1px solid #111;
+  }
+  .strat .name { opacity: 0.6; }
+  .strat .vote { font-weight: bold; }
+  .strat.voted-up   { border-color: #003311; background: #001a08; }
+  .strat.voted-down { border-color: #330000; background: #1a0000; }
+  .strat.voted-none { opacity: 0.4; }
+
+  .cb-status { font-size: 12px; padding: 4px 8px; border: 1px solid; text-align: center; }
+  .cb-status.ok     { color: var(--green2); border-color: #003311; }
+  .cb-status.active { color: var(--red);    border-color: #330000; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.4; } }
+
+  /* ── Trades table ── */
+  .trades-box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    padding: 16px;
+  }
+  .trades-box h3 {
+    font-size: 11px;
+    letter-spacing: 3px;
+    opacity: 0.5;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  th {
+    text-align: left;
+    padding: 6px 10px;
+    font-size: 10px;
+    letter-spacing: 2px;
+    opacity: 0.4;
+    border-bottom: 1px solid var(--border);
+  }
+  td { padding: 6px 10px; border-bottom: 1px solid #111; }
+  tr.win  td { background: #001a08; }
+  tr.loss td { background: #1a0000; }
+  tr.open td { background: #0d0d10; }
+  .pnl-pos { color: var(--green); }
+  .pnl-neg { color: var(--red); }
+
+  /* ── Source badge ── */
+  .source-badge {
+    font-size: 10px;
+    letter-spacing: 1px;
+    opacity: 0.45;
+    text-align: right;
+    margin-top: 4px;
+  }
+
+  /* ── Dot blink ── */
+  .live-dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    background: var(--green);
+    border-radius: 50%;
+    margin-right: 6px;
+    animation: blink 1s infinite;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- HEADER -->
+  <div class="header">
+    <pre class="logo">&#x20;&#x20;&#x42;&#x49;&#x54;&#x43;&#x4F;&#x49;&#x4E;&#x53;&#x4F;&#x4E;&#x54;&#x31;&#x35;
+&#x20;&#x20;&#x2590;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x20;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x20;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x20;&#x20;&#x2590;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x2588;&#x2588;&#x2557;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2557;&#x20;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;
+&#x20;&#x20;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2588;&#x2588;&#x2557;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2550;&#x2588;&#x2588;&#x2557;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2550;&#x2588;&#x2588;&#x2557;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2550;&#x2550;&#x255D;&#x2588;&#x2588;&#x2551;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2588;&#x2588;&#x2557;
+&#x20;&#x20;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2554;&#x255D;&#x2588;&#x2588;&#x2551;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x2588;&#x2588;&#x2551;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x32;&#x35;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2554;&#x255D;</pre>
+    <div class="header-right">
+      <div><span class="badge-paper">&#x25CF; PAPER TRADING</span></div>
+      <div class="bankroll" id="bankroll">$100.00</div>
+      <div class="bankroll-diff" id="bankroll-diff">+$0.00 (0.00%)</div>
+      <div class="source-badge"><span class="live-dot"></span>LIVE &mdash; <span id="data-source">websocket</span></div>
+    </div>
+  </div>
+
+  <!-- METRICS -->
+  <div class="metrics">
+    <div class="card">
+      <div class="card-label">BTC / USD</div>
+      <div class="card-value up" id="btc-price">$0.00</div>
+      <div class="card-sub" id="btc-vol">VOL —</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Delta Ventana</div>
+      <div class="card-value" id="delta-val">0.00%</div>
+      <div class="card-sub" id="delta-1min">1min: —</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Win Rate</div>
+      <div class="card-value up" id="win-rate">0%</div>
+      <div class="card-sub" id="win-loss">0W / 0L &mdash; 0 trades</div>
+    </div>
+    <div class="card">
+      <div class="card-label">P&amp;L Total</div>
+      <div class="card-value" id="pnl-total">$0.00</div>
+      <div class="card-sub" id="pnl-best-worst">Best — / Worst —</div>
+    </div>
+  </div>
+
+  <!-- CHART + SIGNAL -->
+  <div class="main-grid">
+    <div class="chart-box">
+      <h3>&#x25B6; BTC Precio &mdash; &Uacute;ltimos 15 min</h3>
+      <div class="chart-wrap">
+        <canvas id="priceChart"></canvas>
+      </div>
+    </div>
+    <div class="signal-box">
+      <h3>&#x25B6; Ventana Activa</h3>
+      <div class="window-slug" id="slug">—</div>
+
+      <div class="countdown" id="countdown">15:00</div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" id="progress-fill" style="width:0%"></div>
+      </div>
+
+      <div class="signal-dir skip" id="signal-dir">── SKIP</div>
+
+      <div>
+        <div class="conf-label">CONFIANZA</div>
+        <div class="conf-bar-wrap">
+          <div class="conf-bar-fill" id="conf-fill" style="width:0%"></div>
+        </div>
+        <div class="conf-pct" id="conf-pct">0%</div>
+      </div>
+
+      <div class="strat-row" id="strat-rows">
+        <div class="strat voted-none" id="strat-momentum">
+          <span class="name">Momentum</span>
+          <span class="vote dim">—</span>
+        </div>
+        <div class="strat voted-none" id="strat-meanrev">
+          <span class="name">Mean Rev</span>
+          <span class="vote dim">—</span>
+        </div>
+        <div class="strat voted-none" id="strat-macd">
+          <span class="name">MACD Cross</span>
+          <span class="vote dim">—</span>
+        </div>
+      </div>
+
+      <div class="cb-status ok" id="cb-status">&#x25CF; Circuit Breaker: OK</div>
+    </div>
+  </div>
+
+  <!-- TRADES TABLE -->
+  <div class="trades-box">
+    <h3>&#x25B6; &Uacute;ltimos Trades</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>VENTANA</th>
+          <th>DIR</th>
+          <th>CONF</th>
+          <th>RESULTADO</th>
+          <th>P&amp;L</th>
+          <th>BANKROLL</th>
+          <th>COSTO</th>
+        </tr>
+      </thead>
+      <tbody id="trades-body">
+        <tr><td colspan="7" class="dim" style="text-align:center;padding:20px">Sin trades aún</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+// ── Chart setup ──────────────────────────────────────────────────────────────
+const ctx = document.getElementById('priceChart').getContext('2d');
+
+const chartData = {
+  datasets: [
+    {
+      label: 'BTC/USD',
+      data: [],
+      borderColor: '#00ff41',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.2,
+      fill: {
+        target: 'origin',
+        above: 'rgba(0,255,65,0.06)',
+        below: 'rgba(255,51,51,0.06)',
+      },
+    },
+    {
+      label: 'Open',
+      data: [],
+      borderColor: '#ffdd00',
+      borderWidth: 1,
+      borderDash: [4, 4],
+      pointRadius: 0,
+      fill: false,
+    }
+  ]
+};
+
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: chartData,
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 400 },
+    interaction: { intersect: false, mode: 'index' },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#0d0d0d',
+        borderColor: '#003311',
+        borderWidth: 1,
+        titleColor: '#00ff41',
+        bodyColor: '#00cc33',
+        callbacks: {
+          label: ctx => `$${ctx.parsed.y.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}`,
+        }
+      }
+    },
+    scales: {
+      x: {
+        type: 'time',
+        time: { unit: 'minute', displayFormats: { minute: 'HH:mm' } },
+        grid: { color: '#111' },
+        ticks: { color: '#333', maxTicksLimit: 8 },
+        border: { color: '#222' },
+      },
+      y: {
+        grid: { color: '#111' },
+        ticks: {
+          color: '#333',
+          callback: v => '$' + v.toLocaleString('en-US', {minimumFractionDigits:0}),
+        },
+        border: { color: '#222' },
+      }
+    }
+  }
+});
+
+// ── SocketIO ─────────────────────────────────────────────────────────────────
+const socket = io({ transports: ['websocket', 'polling'] });
+
+socket.on('connect', () => console.log('SocketIO connected'));
+socket.on('disconnect', () => console.log('SocketIO disconnected'));
+
+socket.on('state_update', data => {
+  updateMetrics(data);
+  updateChart(data);
+  updateSignal(data);
+  updateTrades(data);
+});
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function fmt(n, d=2) {
+  return n == null ? '—' : Number(n).toLocaleString('en-US', {minimumFractionDigits:d, maximumFractionDigits:d});
+}
+function sign(n) { return n >= 0 ? '+' : ''; }
+function colorClass(n) { return n >= 0 ? 'up' : 'down'; }
+
+// ── Metrics update ───────────────────────────────────────────────────────────
+function updateMetrics(d) {
+  // Price
+  const priceEl = document.getElementById('btc-price');
+  priceEl.textContent = '$' + fmt(d.price);
+  priceEl.className = 'card-value ' + colorClass(d.delta_pct);
+  document.getElementById('btc-vol').textContent = 'VOL ' + fmt(d.volume, 3) + ' BTC';
+
+  // Delta
+  const deltaEl = document.getElementById('delta-val');
+  const dp = d.delta_pct || 0;
+  const dUSD = (d.price || 0) * Math.abs(dp) / 100;
+  deltaEl.textContent = sign(dp) + '$' + fmt(dUSD) + ' (' + sign(dp) + fmt(dp, 2) + '%)';
+  deltaEl.className = 'card-value ' + colorClass(dp);
+  const d1 = d.delta_1min || 0;
+  document.getElementById('delta-1min').textContent = '1min: ' + sign(d1) + fmt(d1, 3) + '%';
+
+  // Win rate
+  const wr = d.win_rate || 0;
+  document.getElementById('win-rate').textContent = fmt(wr, 1) + '%';
+  document.getElementById('win-loss').textContent =
+    (d.wins || 0) + 'W / ' + (d.losses || 0) + 'L — ' + (d.total_trades || 0) + ' trades';
+
+  // P&L
+  const pnl = d.total_pnl || 0;
+  const pnlEl = document.getElementById('pnl-total');
+  pnlEl.textContent = sign(pnl) + '$' + fmt(Math.abs(pnl));
+  pnlEl.className = 'card-value ' + colorClass(pnl);
+  document.getElementById('pnl-best-worst').textContent =
+    'Best +$' + fmt(d.best_trade || 0) + ' / Worst $' + fmt(d.worst_trade || 0);
+
+  // Bankroll
+  const br = d.bankroll || 100;
+  const ibr = d.initial_bankroll || 100;
+  const diff = br - ibr;
+  const diffPct = ibr ? (diff / ibr * 100) : 0;
+  const brEl = document.getElementById('bankroll');
+  brEl.textContent = '$' + fmt(br);
+  brEl.className = 'bankroll ' + colorClass(diff);
+  document.getElementById('bankroll-diff').textContent =
+    sign(diff) + '$' + fmt(Math.abs(diff)) + ' (' + sign(diffPct) + fmt(diffPct, 2) + '%)';
+
+  // Source badge
+  const src = d.data_source || 'websocket';
+  document.getElementById('data-source').textContent = src;
+}
+
+// ── Chart update ─────────────────────────────────────────────────────────────
+function updateChart(d) {
+  const hist = d.price_history || [];
+  if (!hist.length) return;
+
+  // Price series: [{x: ms_timestamp, y: price}]
+  chart.data.datasets[0].data = hist.map(p => ({ x: p.t, y: p.v }));
+
+  // Open price reference line across full window timespan
+  if (d.window_open_price && hist.length >= 2) {
+    const first = hist[0].t;
+    const last  = hist[hist.length - 1].t;
+    chart.data.datasets[1].data = [
+      { x: first, y: d.window_open_price },
+      { x: last,  y: d.window_open_price },
+    ];
+    // Color fill relative to open
+    const current = hist[hist.length - 1].v;
+    chart.data.datasets[0].fill = {
+      target: 'origin',
+      above: current >= d.window_open_price ? 'rgba(0,255,65,0.07)' : 'rgba(255,51,51,0.07)',
+      below: 'transparent',
+    };
+  }
+
+  chart.update('none'); // skip animation for performance
+}
+
+// ── Signal panel update ───────────────────────────────────────────────────────
+function updateSignal(d) {
+  // Slug
+  const slug = d.current_slug || '—';
+  document.getElementById('slug').textContent = slug;
+
+  // Countdown
+  const rem = d.time_remaining || 0;
+  const mm = String(Math.floor(rem / 60)).padStart(2, '0');
+  const ss = String(rem % 60).padStart(2, '0');
+  document.getElementById('countdown').textContent = mm + ':' + ss;
+
+  // Progress bar
+  const pct = Math.min(100, (d.window_progress || 0) * 100);
+  document.getElementById('progress-fill').style.width = pct + '%';
+
+  // Signal direction
+  const dir = d.signal_direction;
+  const sigEl = document.getElementById('signal-dir');
+  if (dir === 'UP') {
+    sigEl.textContent = '⬆  UP';
+    sigEl.className = 'signal-dir up';
+  } else if (dir === 'DOWN') {
+    sigEl.textContent = '⬇  DOWN';
+    sigEl.className = 'signal-dir down';
+  } else {
+    sigEl.textContent = '──  SKIP';
+    sigEl.className = 'signal-dir skip';
+  }
+
+  // Confidence
+  const conf = (d.signal_confidence || 0) * 100;
+  document.getElementById('conf-fill').style.width = conf + '%';
+  document.getElementById('conf-pct').textContent = conf.toFixed(0) + '%';
+
+  // Strategies
+  renderStrat('strat-momentum', 'Momentum',   d.strategy_momentum);
+  renderStrat('strat-meanrev',  'Mean Rev',   d.strategy_mean_rev);
+  renderStrat('strat-macd',     'MACD Cross', d.strategy_macd);
+
+  // Circuit breaker
+  const cbEl = document.getElementById('cb-status');
+  if (d.circuit_breaker_active) {
+    const remMin = Math.ceil((d.circuit_breaker_remaining || 0) / 60);
+    cbEl.textContent = '⚠ CIRCUIT BREAKER — ' + remMin + 'min restantes';
+    cbEl.className = 'cb-status active';
+  } else {
+    cbEl.textContent = '● Circuit Breaker: OK';
+    cbEl.className = 'cb-status ok';
+  }
+}
+
+function renderStrat(id, label, vote) {
+  const el = document.getElementById(id);
+  const voteSpan = el.querySelector('.vote');
+  const nameSpan = el.querySelector('.name');
+  nameSpan.textContent = label;
+  if (vote === 'UP') {
+    voteSpan.textContent = '✓ UP';
+    voteSpan.className = 'vote up';
+    el.className = 'strat voted-up';
+  } else if (vote === 'DOWN') {
+    voteSpan.textContent = '✓ DOWN';
+    voteSpan.className = 'vote down';
+    el.className = 'strat voted-down';
+  } else {
+    voteSpan.textContent = '—';
+    voteSpan.className = 'vote dim';
+    el.className = 'strat voted-none';
+  }
+}
+
+// ── Trades table update ───────────────────────────────────────────────────────
+function updateTrades(d) {
+  const trades = d.trades_list || [];
+  const tbody = document.getElementById('trades-body');
+  if (!trades.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="dim" style="text-align:center;padding:20px">Sin trades aún</td></tr>';
+    return;
+  }
+  tbody.innerHTML = trades.map(t => {
+    const wStr = t.window_ts
+      ? new Date(t.window_ts * 1000).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'})
+      : '—';
+    const dirCls  = t.direction === 'UP' ? 'up' : 'down';
+    const conf    = ((t.confidence || 0) * 100).toFixed(0) + '%';
+    let resStr = '⏳ OPEN';
+    let pnlStr = '—';
+    let pnlCls = 'dim';
+    let brStr  = '—';
+    let rowCls = 'open';
+    if (t.resolved) {
+      if (t.win) {
+        resStr = '✓ WIN';
+        rowCls = 'win';
+      } else {
+        resStr = '✗ LOSS';
+        rowCls = 'loss';
+      }
+      const pnl = t.pnl || 0;
+      pnlStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+      pnlCls = pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+      brStr  = t.bankroll_after != null ? '$' + Number(t.bankroll_after).toFixed(2) : '—';
+    }
+    const cost = t.cost_usd != null ? '$' + Number(t.cost_usd).toFixed(2) : '—';
+    return `<tr class="${rowCls}">
+      <td>${wStr}</td>
+      <td class="${dirCls}">${t.direction || '—'}</td>
+      <td>${conf}</td>
+      <td>${resStr}</td>
+      <td class="${pnlCls}">${pnlStr}</td>
+      <td>${brStr}</td>
+      <td class="dim">${cost}</td>
+    </tr>`;
+  }).join('');
+}
+</script>
+</body>
+</html>
+"""
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    return render_template_string(HTML)
+
+
+@app.route("/api/stats")
+def api_stats():
+    if _state is None:
+        return jsonify({"error": "state not initialized"}), 503
+    return jsonify(_state.get_snapshot())
+
+
+# ── SocketIO background emitter ───────────────────────────────────────────────
+
+def _emit_loop():
+    """Runs inside the eventlet green-thread pool; emits state every second."""
+    import eventlet
+    while True:
+        try:
+            if _state is not None:
+                snap = _state.get_snapshot()
+                # Slim down price_history to last 900 points before sending
+                snap["price_history"] = snap["price_history"][-900:]
+                socketio.emit("state_update", snap)
+        except Exception as e:
+            logger.warning(f"SocketIO emit error: {e}")
+        eventlet.sleep(1)
+
+
+@socketio.on("connect")
+def on_connect():
+    logger.debug("Web client connected")
+    if _state is not None:
+        socketio.emit("state_update", _state.get_snapshot())
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def start_web_dashboard(state: SharedState, port: int = 5000):
+    """
+    Launch Flask-SocketIO in a background daemon thread.
+    Call this once from main() before starting the asyncio loop.
+    """
+    global _state
+    _state = state
+
+    def _run():
+        import eventlet
+        import eventlet.wsgi
+        # Kick off the emit loop as a green thread
+        eventlet.spawn(_emit_loop)
+        port_to_use = int(os.environ.get("PORT", os.environ.get("WEB_PORT", port)))
+        logger.info(f"Web dashboard starting on http://0.0.0.0:{port_to_use}")
+        eventlet.wsgi.server(
+            eventlet.listen(("0.0.0.0", port_to_use)),
+            app,
+            log=logging.getLogger("eventlet.wsgi"),
+            log_output=False,
+        )
+
+    t = threading.Thread(target=_run, name="web-dashboard", daemon=True)
+    t.start()
+    return t

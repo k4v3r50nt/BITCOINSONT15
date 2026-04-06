@@ -65,6 +65,9 @@ class SharedState:
         # Active trade
         self.active_trade: Optional[Dict] = None
 
+        # Data source label ("websocket" | "binance_rest" | "coinbase_rest")
+        self.data_source: str = "websocket"
+
         self._last_updated: float = time.time()
 
     # ── Writers (called from asyncio thread) ────────────────────────────────
@@ -201,4 +204,5 @@ class SharedState:
                 "active_trade": self.active_trade,
                 # Meta
                 "last_updated": self._last_updated,
+                "data_source": self.data_source,
             }

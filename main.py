@@ -18,6 +18,8 @@ from risk_manager import RiskManager
 from paper_trader import PaperTrader
 from dashboard import Dashboard
 from telegram_alerts import TelegramAlerter
+from shared_state import SharedState
+from web_dashboard import start_web_dashboard
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
@@ -46,14 +48,15 @@ class BotState:
 
 async def dashboard_loop(dashboard: Dashboard, market_data: MarketData,
                           scanner: MarketScanner, risk_manager: RiskManager,
-                          bot_state: BotState):
-    """Updates dashboard every second from live data."""
+                          bot_state: BotState, shared_state: SharedState):
+    """Updates terminal dashboard and shared web state every second."""
     while bot_state.running:
         try:
             snap = market_data.snapshot()
             dashboard.update_from_market(snap)
             dashboard.update_from_scanner(scanner)
-            dashboard.update_from_risk(risk_manager.status())
+            risk_status = risk_manager.status()
+            dashboard.update_from_risk(risk_status)
 
             if bot_state.last_signal:
                 dashboard.update_from_signal(bot_state.last_signal)
@@ -63,19 +66,51 @@ async def dashboard_loop(dashboard: Dashboard, market_data: MarketData,
             else:
                 dashboard.update(active_trade=None)
 
+            # ── Push to web shared state ──
+            shared_state.update_price(
+                price=snap.get("price", 0),
+                window_open_price=snap.get("window_open_price", 0),
+                delta_pct=snap.get("delta_pct", 0),
+                delta_1min=snap.get("delta_1min", 0),
+                window_high=snap.get("window_high", 0),
+                window_low=snap.get("window_low", 0),
+                volume=snap.get("volume", 0),
+                rsi=snap.get("rsi"),
+                vwap=snap.get("vwap"),
+            )
+            shared_state.update_window(
+                window_ts=scanner.current_window_ts,
+                slug=scanner.current_slug,
+                time_remaining=scanner.time_remaining(),
+                progress=scanner.window_progress(),
+            )
+            shared_state.update_risk(
+                bankroll=risk_status["bankroll"],
+                cb_active=risk_status["circuit_breaker_active"],
+                cb_remaining=risk_status["circuit_breaker_remaining"],
+            )
+            shared_state.update_active_trade(bot_state.active_trade)
+            if bot_state.last_signal:
+                shared_state.update_signal(bot_state.last_signal)
+            # Expose data source from market_data
+            with shared_state._lock:
+                shared_state.data_source = snap.get("source", "websocket")
+
         except Exception as e:
             logger.warning(f"Dashboard update error: {e}")
 
         await asyncio.sleep(1)
 
 
-async def stats_refresh_loop(dashboard: Dashboard, bot_state: BotState):
-    """Refreshes DB stats every 10 seconds."""
+async def stats_refresh_loop(dashboard: Dashboard, bot_state: BotState,
+                              shared_state: SharedState):
+    """Refreshes DB stats every 10 seconds (terminal + web)."""
     while bot_state.running:
         try:
             stats = database.get_stats()
-            recent = database.get_last_n_trades(8)
+            recent = database.get_last_n_trades(10)
             dashboard.update_trades(stats, recent)
+            shared_state.update_stats(stats, recent)
         except Exception as e:
             logger.warning(f"Stats refresh error: {e}")
         await asyncio.sleep(10)
@@ -89,6 +124,7 @@ async def main_trading_loop(
     paper_trader: PaperTrader,
     telegram: TelegramAlerter,
     bot_state: BotState,
+    shared_state: SharedState = None,
 ):
     logger.info("Starting main trading loop")
 
@@ -130,6 +166,8 @@ async def main_trading_loop(
 
                 bot_state.window_open_price = market_data.current_price
                 market_data.set_window_open(wts)
+                if shared_state is not None:
+                    shared_state.new_window(wts, bot_state.window_open_price)
                 logger.info(f"Window open price: ${bot_state.window_open_price:,.2f}")
 
             # ── Timing within window ─────────────────────────────
@@ -211,6 +249,7 @@ async def main():
         logger.info(f"Starting fresh with bankroll: ${current_bankroll:.2f}")
 
     # Init components
+    shared_state = SharedState(initial_bankroll=INITIAL_BANKROLL)
     scanner = MarketScanner()
     market_data = MarketData()
     signal_engine = SignalEngine(min_confidence=MIN_CONFIDENCE)
@@ -220,6 +259,9 @@ async def main():
     telegram = TelegramAlerter()
     bot_state = BotState()
 
+    # Start web dashboard (background thread, non-blocking)
+    start_web_dashboard(shared_state)
+
     # Start components
     await scanner.start()
     await market_data.start()
@@ -228,11 +270,13 @@ async def main():
 
     # Initial DB stats
     initial_stats = database.get_stats()
-    recent_trades = database.get_last_n_trades(8)
+    recent_trades = database.get_last_n_trades(10)
     dashboard.update_trades(initial_stats, recent_trades)
     dashboard.update(bankroll=current_bankroll)
+    shared_state.update_stats(initial_stats, recent_trades)
+    shared_state.update_risk(current_bankroll, False, 0)
 
-    # Start dashboard
+    # Start terminal dashboard
     dashboard.start()
 
     # Graceful shutdown
@@ -245,11 +289,11 @@ async def main():
 
     # Create tasks
     tasks = [
-        asyncio.create_task(dashboard_loop(dashboard, market_data, scanner, risk_manager, bot_state)),
-        asyncio.create_task(stats_refresh_loop(dashboard, bot_state)),
+        asyncio.create_task(dashboard_loop(dashboard, market_data, scanner, risk_manager, bot_state, shared_state)),
+        asyncio.create_task(stats_refresh_loop(dashboard, bot_state, shared_state)),
         asyncio.create_task(main_trading_loop(
             scanner, market_data, signal_engine, risk_manager,
-            paper_trader, telegram, bot_state,
+            paper_trader, telegram, bot_state, shared_state,
         )),
     ]
 
