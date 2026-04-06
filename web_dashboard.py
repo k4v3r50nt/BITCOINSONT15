@@ -77,12 +77,47 @@ HTML = r"""<!DOCTYPE html>
     gap: 12px;
     background: var(--card);
   }
-  .logo {
-    font-size: 13px;
-    line-height: 1.15;
-    color: var(--green);
+  /* ── Rainbow animation ── */
+  @keyframes rainbow {
+    0%   { color: #ff0000; }
+    16%  { color: #ff8800; }
+    33%  { color: #ffff00; }
+    50%  { color: #00ff00; }
+    66%  { color: #0088ff; }
+    83%  { color: #8800ff; }
+    100% { color: #ff0000; }
+  }
+
+  .banner {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .banner-title {
+    font-size: 22px;
+    font-weight: bold;
+    letter-spacing: 6px;
+    font-family: 'Courier New', Courier, monospace;
     white-space: pre;
-    text-shadow: 0 0 8px #00ff4180;
+    animation: rainbow 3s linear infinite;
+    text-shadow: 0 0 12px currentColor;
+  }
+  .banner-ascii {
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: pre;
+    font-family: 'Courier New', Courier, monospace;
+    animation: rainbow 3s linear infinite;
+    animation-delay: -1s;
+    text-shadow: 0 0 8px currentColor;
+  }
+  .banner-dev {
+    font-size: 11px;
+    letter-spacing: 3px;
+    font-family: 'Courier New', Courier, monospace;
+    animation: rainbow 3s linear infinite;
+    animation-delay: -2s;
+    opacity: 0.85;
   }
   .header-right { text-align: right; }
   .badge-paper {
@@ -303,10 +338,13 @@ HTML = r"""<!DOCTYPE html>
 
   <!-- HEADER -->
   <div class="header">
-    <pre class="logo">&#x20;&#x20;&#x42;&#x49;&#x54;&#x43;&#x4F;&#x49;&#x4E;&#x53;&#x4F;&#x4E;&#x54;&#x31;&#x35;
-&#x20;&#x20;&#x2590;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x20;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x20;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x20;&#x20;&#x2590;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x2588;&#x2588;&#x2557;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2557;&#x20;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;
-&#x20;&#x20;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2588;&#x2588;&#x2557;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2550;&#x2588;&#x2588;&#x2557;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2550;&#x2588;&#x2588;&#x2557;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2550;&#x2550;&#x255D;&#x2588;&#x2588;&#x2551;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x2588;&#x2588;&#x2554;&#x2550;&#x2550;&#x2588;&#x2588;&#x2557;
-&#x20;&#x20;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2554;&#x255D;&#x2588;&#x2588;&#x2551;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x2588;&#x2588;&#x2551;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2557;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x20;&#x2588;&#x2588;&#x2551;&#x32;&#x35;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2554;&#x255D;</pre>
+    <div class="banner">
+      <div class="banner-title">&#x2592; BITCOINSONT15 &#x2592;</div>
+      <pre class="banner-ascii">&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x256C;&#x2550;&#x2550;&#x256C;
+&#x2551; K &#x2551; A &#x2551; V &#x2551;E&#x2551; R &#x2551; C &#x2551; O &#x2551;I&#x2551;N&#x2551;
+&#x255A;&#x2550;&#x2550;&#x2550;&#x255D;&#x2550;&#x2550;&#x2550;&#x255A;&#x2550;&#x2550;&#x2550;&#x255D;&#x2550;&#x2550;&#x255A;&#x2550;&#x2550;&#x2550;&#x255D;&#x2550;&#x2550;&#x2550;&#x255A;&#x2550;&#x2550;&#x2550;&#x255D;&#x2550;&#x2550;&#x255A;&#x2550;&#x2550;&#x255A;</pre>
+      <div class="banner-dev">&#x25B8; dev: k4v3rs0nt</div>
+    </div>
     <div class="header-right">
       <div><span class="badge-paper">&#x25CF; PAPER TRADING</span></div>
       <div class="bankroll" id="bankroll">$100.00</div>
