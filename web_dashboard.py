@@ -95,20 +95,27 @@ HTML = r"""<!DOCTYPE html>
   }
   .btc-rain {
     position: absolute;
-    inset: 0;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
     pointer-events: none;
     z-index: 0;
+    opacity: 0.45;
+    mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
   }
   .btc-symbol {
     position: absolute;
-    top: 0;
+    top: -30px;
     font-family: 'Courier New', Courier, monospace;
     animation: rainbow 3s linear infinite, fall linear infinite;
     user-select: none;
+    line-height: 1;
   }
   @keyframes fall {
-    0%   { transform: translateY(-20px); opacity: 1; }
-    100% { transform: translateY(80px);  opacity: 0; }
+    0%   { top: -30px; opacity: 0.9; }
+    100% { top: 120px; opacity: 0;   }
   }
 
   /* ── Banner text (above rain layer) ── */
@@ -117,7 +124,7 @@ HTML = r"""<!DOCTYPE html>
     flex-direction: column;
     gap: 6px;
     position: relative;
-    z-index: 1;
+    z-index: 2;
   }
   .banner-title {
     font-size: 22px;
@@ -136,7 +143,7 @@ HTML = r"""<!DOCTYPE html>
     animation-delay: -2s;
     opacity: 0.85;
   }
-  .header-right { text-align: right; }
+  .header-right { text-align: right; position: relative; z-index: 2; }
   .badge-paper {
     display: inline-block;
     background: transparent;
@@ -466,23 +473,29 @@ HTML = r"""<!DOCTYPE html>
 (function() {
   const rain = document.getElementById('btc-rain');
   const COUNT = 15;
-  // Spread left positions evenly with slight jitter so columns don't overlap
   for (let i = 0; i < COUNT; i++) {
     const el = document.createElement('span');
     el.className = 'btc-symbol';
     el.textContent = '\u20bf';
 
-    const leftPct   = (i / COUNT * 100) + (Math.random() * 4 - 2); // 0–100% with ±2 jitter
-    const fontSize  = 12 + Math.random() * 12;                      // 12–24px
-    const duration  = 2 + Math.random() * 4;                        // 2–6s fall
-    const delay     = -(Math.random() * duration);                   // stagger start
-    const rbDelay   = -(Math.random() * 3);                         // random rainbow phase
+    // Spread columns evenly across the header width with small jitter
+    const leftPct      = (i / COUNT * 100) + (Math.random() * 5 - 2.5);
+    const fontSize     = 14 + Math.random() * 14;   // 14–28px
+    const fallDuration = 3 + Math.random() * 5;     // 3–8s per drop
+    // Negative delay = symbol is already mid-fall when page loads → no sync flash
+    const fallDelay    = -(Math.random() * fallDuration);
+    const rbDuration   = 2 + Math.random() * 2;     // 2–4s rainbow cycle
+    const rbDelay      = -(Math.random() * rbDuration);
 
     el.style.cssText = [
-      `left: ${leftPct}%`,
+      `left: ${leftPct.toFixed(1)}%`,
       `font-size: ${fontSize.toFixed(1)}px`,
-      `animation-duration: ${rbDelay.toFixed(2)}s, ${duration.toFixed(2)}s`,
-      `animation-delay: ${rbDelay.toFixed(2)}s, ${delay.toFixed(2)}s`,
+      // animation shorthand order: rainbow, fall
+      `animation-name: rainbow, fall`,
+      `animation-duration: ${rbDuration.toFixed(2)}s, ${fallDuration.toFixed(2)}s`,
+      `animation-delay: ${rbDelay.toFixed(2)}s, ${fallDelay.toFixed(2)}s`,
+      `animation-timing-function: linear, linear`,
+      `animation-iteration-count: infinite, infinite`,
     ].join(';');
 
     rain.appendChild(el);
