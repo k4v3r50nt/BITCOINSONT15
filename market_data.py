@@ -1,12 +1,13 @@
 import asyncio
+import enum
 import json
 import logging
 import time
 from collections import deque
 from typing import List, Dict, Optional, Deque
 
+import aiohttp
 import websockets
-from websockets.exceptions import ConnectionClosed
 
 from config import BINANCE_WS_URL
 
@@ -14,18 +15,54 @@ logger = logging.getLogger(__name__)
 
 MAX_CANDLES = 30
 TICK_HISTORY_SECONDS = 900  # 15 minutes
+REST_POLL_INTERVAL = 2      # seconds between REST price polls
+KLINE_REFRESH_INTERVAL = 60 # seconds between kline fetches in REST mode
+WS_RETRY_INTERVAL = 300     # seconds before re-attempting WebSocket after failure
+
+BINANCE_PRICE_URL = "https://api.binance.com/api/v3/ticker/price"
+BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+COINBASE_PRICE_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
+
+
+class DataSource(enum.Enum):
+    WEBSOCKET = "websocket"
+    BINANCE_REST = "binance_rest"
+    COINBASE_REST = "coinbase_rest"
 
 
 class Candle:
-    def __init__(self, data: dict):
+    """Unified candle — built from either a WS kline message or a REST kline row."""
+
+    @classmethod
+    def from_ws(cls, data: dict) -> "Candle":
         k = data.get("k", data)
-        self.open_time: int = k["t"]
-        self.open: float = float(k["o"])
-        self.high: float = float(k["h"])
-        self.low: float = float(k["l"])
-        self.close: float = float(k["c"])
-        self.volume: float = float(k["v"])
-        self.is_closed: bool = k.get("x", False)
+        c = cls.__new__(cls)
+        c.open_time = k["t"]
+        c.open = float(k["o"])
+        c.high = float(k["h"])
+        c.low = float(k["l"])
+        c.close = float(k["c"])
+        c.volume = float(k["v"])
+        c.is_closed = k.get("x", False)
+        return c
+
+    @classmethod
+    def from_rest_row(cls, row: list) -> "Candle":
+        """
+        Binance klines REST row:
+        [open_time, open, high, low, close, volume, close_time, ...]
+        """
+        c = cls.__new__(cls)
+        c.open_time = int(row[0])
+        c.open = float(row[1])
+        c.high = float(row[2])
+        c.low = float(row[3])
+        c.close = float(row[4])
+        c.volume = float(row[5])
+        # All rows from /klines are closed candles except possibly the last
+        close_time = int(row[6])
+        c.is_closed = close_time < int(time.time() * 1000)
+        return c
 
 
 class MarketData:
@@ -38,15 +75,23 @@ class MarketData:
 
         # Tick history for chart: list of {timestamp, price}
         self.price_history: List[Dict] = []
-        self._tick_cutoff = 0
+
+        # Data source tracking
+        self.source: DataSource = DataSource.WEBSOCKET
+        self._ws_last_failed: float = 0.0
+        self._last_kline_fetch: float = 0.0
 
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._session: Optional[aiohttp.ClientSession] = None
         self._lock = asyncio.Lock()
+
+    # ── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self):
         self._running = True
-        self._task = asyncio.create_task(self._ws_loop())
+        self._session = aiohttp.ClientSession()
+        self._task = asyncio.create_task(self._main_loop())
 
     async def stop(self):
         self._running = False
@@ -56,56 +101,204 @@ class MarketData:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        if self._session:
+            await self._session.close()
 
     def set_window_open(self, ts: int):
         self.window_open_time = ts
         self.window_open_price = self.current_price
-        # Reset tick history for new window
         self.price_history = []
         if self.current_price > 0:
-            self.price_history.append({
-                "timestamp": ts,
-                "price": self.current_price,
-            })
+            self.price_history.append({"timestamp": ts, "price": self.current_price})
 
-    async def _ws_loop(self):
+    # ── Main dispatch loop ───────────────────────────────────────────────────
+
+    async def _main_loop(self):
         while self._running:
             try:
-                await self._connect()
+                if self.source == DataSource.WEBSOCKET:
+                    await self._try_websocket()
+                    # _try_websocket returns only on failure; fall through to REST
+                    if self._running:
+                        logger.info("Falling back to Binance REST polling")
+                        self.source = DataSource.BINANCE_REST
+                        self._ws_last_failed = time.time()
+                else:
+                    # REST polling tick
+                    await self._rest_poll_once()
+                    await asyncio.sleep(REST_POLL_INTERVAL)
+
+                    # Periodically retry the WebSocket
+                    if (
+                        self.source != DataSource.WEBSOCKET
+                        and time.time() - self._ws_last_failed > WS_RETRY_INTERVAL
+                    ):
+                        logger.info("Retrying Binance WebSocket after REST fallback period...")
+                        self.source = DataSource.WEBSOCKET
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning(f"WS error: {e}, reconnecting in 3s...")
-                await asyncio.sleep(3)
+                logger.exception(f"_main_loop unexpected error: {e}")
+                await asyncio.sleep(5)
 
-    async def _connect(self):
-        logger.info(f"Connecting to Binance WS: {BINANCE_WS_URL}")
-        async with websockets.connect(BINANCE_WS_URL, ping_interval=20, ping_timeout=10) as ws:
-            logger.info("Binance WS connected")
-            async for raw in ws:
-                if not self._running:
-                    break
-                try:
-                    msg = json.loads(raw)
-                    await self._handle_kline(msg)
-                except Exception as e:
-                    logger.warning(f"WS parse error: {e}")
+    # ── WebSocket path ───────────────────────────────────────────────────────
 
-    async def _handle_kline(self, msg: dict):
-        candle = Candle(msg)
-        now = time.time()
+    async def _try_websocket(self):
+        """
+        Attempt to connect and stream. Returns (without raising) on any error
+        so the caller can switch to REST.
+        """
+        try:
+            logger.info(f"Connecting to Binance WebSocket: {BINANCE_WS_URL}")
+            async with websockets.connect(
+                BINANCE_WS_URL,
+                ping_interval=20,
+                ping_timeout=10,
+                open_timeout=15,
+            ) as ws:
+                logger.info("Binance WebSocket connected — source: WEBSOCKET")
+                self.source = DataSource.WEBSOCKET
+                async for raw in ws:
+                    if not self._running:
+                        return
+                    try:
+                        msg = json.loads(raw)
+                        await self._handle_kline_ws(msg)
+                    except Exception as parse_err:
+                        logger.warning(f"WS parse error: {parse_err}")
 
+        except websockets.exceptions.InvalidStatus as e:
+            code = getattr(e.response, "status_code", None)
+            logger.warning(
+                f"Binance WS rejected with HTTP {code} "
+                f"({'geo-blocked' if code == 451 else 'auth/other'}) — switching to REST"
+            )
+        except (OSError, asyncio.TimeoutError, websockets.exceptions.WebSocketException) as e:
+            logger.warning(f"Binance WS connection error: {e} — switching to REST")
+        except Exception as e:
+            logger.warning(f"Binance WS unexpected error: {e} — switching to REST")
+        # Return normally; caller will set source = BINANCE_REST
+
+    async def _handle_kline_ws(self, msg: dict):
+        candle = Candle.from_ws(msg)
+        await self._ingest_price(candle.close)
         async with self._lock:
-            self.current_price = candle.close
             self.current_candle = candle
-
-            # Keep tick history (last 15 minutes)
-            cutoff = now - TICK_HISTORY_SECONDS
-            self.price_history = [p for p in self.price_history if p["timestamp"] >= cutoff]
-            self.price_history.append({"timestamp": now, "price": candle.close})
-
             if candle.is_closed:
                 self.candles.append(candle)
+
+    # ── REST polling path ────────────────────────────────────────────────────
+
+    async def _rest_poll_once(self):
+        """Single REST tick: price + (periodically) klines for indicators."""
+        price = await self._fetch_price_rest()
+        if price is None:
+            logger.warning("All REST price sources failed this tick")
+            return
+
+        await self._ingest_price(price)
+
+        # Refresh kline candle buffer periodically for indicators
+        if time.time() - self._last_kline_fetch >= KLINE_REFRESH_INTERVAL:
+            await self._fetch_klines_rest()
+            self._last_kline_fetch = time.time()
+
+    async def _fetch_price_rest(self) -> Optional[float]:
+        """Try Binance REST, then Coinbase. Returns price or None."""
+        price = await self._binance_price()
+        if price is not None:
+            if self.source != DataSource.BINANCE_REST:
+                logger.info("Source: BINANCE_REST")
+                self.source = DataSource.BINANCE_REST
+            return price
+
+        logger.warning("Binance REST price failed — trying Coinbase")
+        price = await self._coinbase_price()
+        if price is not None:
+            if self.source != DataSource.COINBASE_REST:
+                logger.info("Source: COINBASE_REST")
+                self.source = DataSource.COINBASE_REST
+            return price
+
+        return None
+
+    async def _binance_price(self) -> Optional[float]:
+        try:
+            async with self._session.get(
+                BINANCE_PRICE_URL,
+                params={"symbol": "BTCUSDT"},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status == 451:
+                    logger.warning("Binance REST HTTP 451 — geo-blocked")
+                    return None
+                if resp.status != 200:
+                    logger.warning(f"Binance REST price HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                return float(data["price"])
+        except Exception as e:
+            logger.warning(f"Binance REST price error: {e}")
+            return None
+
+    async def _coinbase_price(self) -> Optional[float]:
+        try:
+            async with self._session.get(
+                COINBASE_PRICE_URL,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Coinbase REST price HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                return float(data["data"]["amount"])
+        except Exception as e:
+            logger.warning(f"Coinbase REST price error: {e}")
+            return None
+
+    async def _fetch_klines_rest(self):
+        """
+        Fetch last 30 closed 1-minute candles from Binance REST.
+        Silently skips if Binance is unavailable (indicators stay stale).
+        """
+        try:
+            async with self._session.get(
+                BINANCE_KLINES_URL,
+                params={"symbol": "BTCUSDT", "interval": "1m", "limit": MAX_CANDLES + 1},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Binance klines HTTP {resp.status} — indicators stale")
+                    return
+                rows = await resp.json()
+        except Exception as e:
+            logger.warning(f"Binance klines fetch error: {e} — indicators stale")
+            return
+
+        candles = [Candle.from_rest_row(row) for row in rows]
+        closed = [c for c in candles if c.is_closed]
+
+        async with self._lock:
+            self.candles.clear()
+            for c in closed[-MAX_CANDLES:]:
+                self.candles.append(c)
+            # Use the last (possibly open) candle as current
+            if candles:
+                self.current_candle = candles[-1]
+
+        logger.debug(f"Refreshed {len(closed)} closed candles via REST")
+
+    # ── Shared price ingestion ───────────────────────────────────────────────
+
+    async def _ingest_price(self, price: float):
+        """Update current_price and price_history regardless of source."""
+        now = time.time()
+        async with self._lock:
+            self.current_price = price
+            cutoff = now - TICK_HISTORY_SECONDS
+            self.price_history = [p for p in self.price_history if p["timestamp"] >= cutoff]
+            self.price_history.append({"timestamp": now, "price": price})
 
     # ── Indicators ──────────────────────────────────────────────────────────
 
@@ -125,7 +318,6 @@ class MarketData:
             gains.append(max(diff, 0))
             losses.append(max(-diff, 0))
 
-        # Wilder's smoothed averages
         avg_gain = sum(gains[:period]) / period
         avg_loss = sum(losses[:period]) / period
         for i in range(period, len(gains)):
@@ -216,4 +408,5 @@ class MarketData:
             "window_open_price": self.window_open_price,
             "candle_count": len(self.candles),
             "price_history": list(self.price_history),
+            "source": self.source.value,
         }
