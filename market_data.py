@@ -10,24 +10,28 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 MAX_CANDLES = 30
-TICK_HISTORY_SECONDS = 900   # 15 minutes of price history
-POLL_INTERVAL = 3            # seconds between price fetches
+TICK_HISTORY_SECONDS = 900     # 15 minutes of price history
+POLL_INTERVAL = 5              # seconds between price fetches
 SYNTHETIC_CANDLE_SECONDS = 60  # group ticks into 1-min synthetic candles
 
-COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
+KRAKEN_URL    = "https://api.kraken.com/0/public/Ticker"
 MEMPOOL_URL   = "https://mempool.space/api/v1/prices"
+COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
+
+HEADERS = {"User-Agent": "BITCOINSONT15/1.0"}
 
 
 class DataSource(enum.Enum):
-    COINGECKO = "coingecko"
+    KRAKEN    = "kraken"
     MEMPOOL   = "mempool"
+    COINGECKO = "coingecko"
     NONE      = "none"
 
 
 class SyntheticCandle:
     """
     1-minute candle built from price ticks.
-    Replaces the Binance kline candle for indicator calculations.
+    Used for RSI / MACD calculations in place of exchange kline data.
     """
     def __init__(self, open_price: float, open_time: float):
         self.open_time: float = open_time
@@ -35,7 +39,7 @@ class SyntheticCandle:
         self.high:   float = open_price
         self.low:    float = open_price
         self.close:  float = open_price
-        self.volume: float = 0.0      # no volume data from these APIs
+        self.volume: float = 0.0
         self.is_closed: bool = False
 
     def update(self, price: float):
@@ -71,9 +75,7 @@ class MarketData:
 
     async def start(self):
         self._running = True
-        self._session = aiohttp.ClientSession(
-            headers={"User-Agent": "BITCOINSONT15/1.0"}
-        )
+        self._session = aiohttp.ClientSession(headers=HEADERS)
         self._task = asyncio.create_task(self._poll_loop())
 
     async def stop(self):
@@ -97,7 +99,6 @@ class MarketData:
     # ── Poll loop ────────────────────────────────────────────────────────────
 
     async def _poll_loop(self):
-        """Fetch price every POLL_INTERVAL seconds, trying sources in order."""
         while self._running:
             try:
                 price = await self._fetch_price()
@@ -107,21 +108,20 @@ class MarketData:
                 break
             except Exception as e:
                 logger.warning(f"Poll loop error: {e}")
-
             await asyncio.sleep(POLL_INTERVAL)
 
     # ── Price fetchers ───────────────────────────────────────────────────────
 
     async def _fetch_price(self) -> Optional[float]:
-        """Try CoinGecko first, then Mempool. Returns float or None."""
-        price = await self._coingecko_price()
+        """Try Kraken → Mempool → CoinGecko. Returns float or None."""
+        price = await self._kraken_price()
         if price is not None:
-            if self.source != DataSource.COINGECKO:
-                logger.info("Price source: CoinGecko")
-                self.source = DataSource.COINGECKO
+            if self.source != DataSource.KRAKEN:
+                logger.info("Price source: Kraken")
+                self.source = DataSource.KRAKEN
             return price
 
-        logger.warning("CoinGecko failed — trying Mempool.space")
+        logger.warning("Kraken failed — trying Mempool.space")
         price = await self._mempool_price()
         if price is not None:
             if self.source != DataSource.MEMPOOL:
@@ -129,25 +129,36 @@ class MarketData:
                 self.source = DataSource.MEMPOOL
             return price
 
+        logger.warning("Mempool failed — trying CoinGecko")
+        price = await self._coingecko_price()
+        if price is not None:
+            if self.source != DataSource.COINGECKO:
+                logger.info("Price source: CoinGecko")
+                self.source = DataSource.COINGECKO
+            return price
+
         if self.source != DataSource.NONE:
             logger.error("All price sources failed this tick")
             self.source = DataSource.NONE
         return None
 
-    async def _coingecko_price(self) -> Optional[float]:
+    async def _kraken_price(self) -> Optional[float]:
         try:
             async with self._session.get(
-                COINGECKO_URL,
-                params={"ids": "bitcoin", "vs_currencies": "usd"},
+                KRAKEN_URL,
+                params={"pair": "XBTUSD"},
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status != 200:
-                    logger.warning(f"CoinGecko HTTP {resp.status}")
+                    logger.warning(f"Kraken HTTP {resp.status}")
                     return None
                 data = await resp.json()
-                return float(data["bitcoin"]["usd"])
+                if data.get("error"):
+                    logger.warning(f"Kraken API error: {data['error']}")
+                    return None
+                return float(data["result"]["XXBTZUSD"]["c"][0])
         except Exception as e:
-            logger.warning(f"CoinGecko error: {e}")
+            logger.warning(f"Kraken error: {e}")
             return None
 
     async def _mempool_price(self) -> Optional[float]:
@@ -165,6 +176,22 @@ class MarketData:
             logger.warning(f"Mempool error: {e}")
             return None
 
+    async def _coingecko_price(self) -> Optional[float]:
+        try:
+            async with self._session.get(
+                COINGECKO_URL,
+                params={"ids": "bitcoin", "vs_currencies": "usd"},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"CoinGecko HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                return float(data["bitcoin"]["usd"])
+        except Exception as e:
+            logger.warning(f"CoinGecko error: {e}")
+            return None
+
     # ── Price ingestion + synthetic candle builder ───────────────────────────
 
     async def _ingest_price(self, price: float):
@@ -179,19 +206,15 @@ class MarketData:
 
             # Build / close synthetic 1-minute candles for indicators
             if self.current_candle is None or self._candle_start == 0.0:
-                # Start first candle
+                self.current_candle = SyntheticCandle(price, now)
+                self._candle_start = now
+            elif now - self._candle_start >= SYNTHETIC_CANDLE_SECONDS:
+                self.current_candle.close_candle()
+                self.candles.append(self.current_candle)
                 self.current_candle = SyntheticCandle(price, now)
                 self._candle_start = now
             else:
-                elapsed_in_candle = now - self._candle_start
-                if elapsed_in_candle >= SYNTHETIC_CANDLE_SECONDS:
-                    # Close current candle, start new one
-                    self.current_candle.close_candle()
-                    self.candles.append(self.current_candle)
-                    self.current_candle = SyntheticCandle(price, now)
-                    self._candle_start = now
-                else:
-                    self.current_candle.update(price)
+                self.current_candle.update(price)
 
     # ── Indicators ──────────────────────────────────────────────────────────
 
@@ -246,8 +269,7 @@ class MarketData:
         return macd_line[-1], signal_line[-1], histogram
 
     def vwap(self) -> Optional[float]:
-        # No volume data from public price APIs — return None gracefully
-        return None
+        return None  # no volume data from these APIs
 
     def delta_from_open(self) -> float:
         if self.window_open_price == 0 or self.current_price == 0:
@@ -273,7 +295,6 @@ class MarketData:
         return min(p["price"] for p in history)
 
     def current_volume(self) -> float:
-        # No volume available from these APIs
         return 0.0
 
     def snapshot(self) -> dict:
