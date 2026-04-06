@@ -1,0 +1,40 @@
+2026-04-06 08:12:11,769 [INFO] main: ============================================================
+2026-04-06 08:12:11,769 [INFO] main:   BITCOINSONT15 — BTC Paper Trading Bot
+2026-04-06 08:12:11,769 [INFO] main: ============================================================
+2026-04-06 08:12:11,770 [INFO] main: Starting fresh with bankroll: $100.00
+2026-04-06 08:12:11,770 [INFO] telegram_alerts: Telegram not configured — alerts disabled
+2026-04-06 08:12:11,771 [INFO] market_scanner: Scanning for window 1775484000
+2026-04-06 08:12:11,975 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775484000: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:12,186 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775484900: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:12,315 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775483100: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:12,534 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775485800: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:12,728 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775482200: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:12,729 [WARNING] market_scanner: No market found for window 1775484000 and offsets [0, 900, -900, 1800, -1800]
+2026-04-06 08:12:12,733 [INFO] market_data: Connecting to Binance WS: wss://stream.binance.com:9443/ws/btcusdt@kline_1m
+2026-04-06 08:12:12,751 [INFO] main: Starting main trading loop
+2026-04-06 08:12:12,751 [INFO] main: === New window: 1775484000 (08:00:00) ===
+2026-04-06 08:12:12,751 [INFO] market_scanner: Scanning for window 1775484000
+2026-04-06 08:12:12,906 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775484000: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:13,169 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775484900: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:13,172 [WARNING] market_data: WS error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1081), reconnecting in 3s...
+2026-04-06 08:12:13,280 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775483100: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:13,376 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775485800: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:13,631 [WARNING] market_scanner: fetch_market_for_slug error for btc-updown-15m-1775482200: Cannot connect to host gamma-api.polymarket.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')]
+2026-04-06 08:12:13,632 [WARNING] market_scanner: No market found for window 1775484000 and offsets [0, 900, -900, 1800, -1800]
+2026-04-06 08:12:16,174 [INFO] market_data: Connecting to Binance WS: wss://stream.binance.com:9443/ws/btcusdt@kline_1m
+2026-04-06 08:12:16,663 [WARNING] market_data: WS error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1081), reconnecting in 3s...
+2026-04-06 08:12:19,665 [INFO] market_data: Connecting to Binance WS: wss://stream.binance.com:9443/ws/btcusdt@kline_1m
+2026-04-06 08:12:20,114 [WARNING] market_data: WS error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1081), reconnecting in 3s...
+2026-04-06 08:12:23,116 [INFO] market_data: Connecting to Binance WS: wss://stream.binance.com:9443/ws/btcusdt@kline_1m
+2026-04-06 08:12:23,480 [WARNING] market_data: WS error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1081), reconnecting in 3s...
+2026-04-06 08:12:26,482 [INFO] market_data: Connecting to Binance WS: wss://stream.binance.com:9443/ws/btcusdt@kline_1m
+2026-04-06 08:12:26,872 [WARNING] market_data: WS error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1081), reconnecting in 3s...
+2026-04-06 08:12:28,648 [INFO] main: Window open price: $0.00
+2026-04-06 08:12:29,873 [INFO] market_data: Connecting to Binance WS: wss://stream.binance.com:9443/ws/btcusdt@kline_1m
+2026-04-06 08:12:30,295 [WARNING] market_data: WS error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1081), reconnecting in 3s...
+2026-04-06 08:12:33,296 [INFO] market_data: Connecting to Binance WS: wss://stream.binance.com:9443/ws/btcusdt@kline_1m
+2026-04-06 08:12:33,673 [WARNING] market_data: WS error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1081), reconnecting in 3s...
+2026-04-06 08:12:36,675 [INFO] market_data: Connecting to Binance WS: wss://stream.binance.com:9443/ws/btcusdt@kline_1m
+2026-04-06 08:12:37,015 [WARNING] market_data: WS error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1081), reconnecting in 3s...
+2026-04-06 08:12:40,016 [INFO] market_data: Connecting to Binance WS: wss://stream.binance.com:9443/ws/btcusdt@kline_1m
+2026-04-06 08:12:40,428 [WARNING] market_data: WS error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1081), reconnecting in 3s...
