@@ -28,6 +28,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.FileHandler("bot.log"), logging.StreamHandler(sys.stdout)],
 )
+# signal_engine logs at DEBUG so every strategy decision is visible in bot.log
+logging.getLogger("signal_engine").setLevel(logging.DEBUG)
 logger = logging.getLogger("main")
 
 
@@ -175,25 +177,15 @@ async def main_trading_loop(
             time_remaining = max(0, WINDOW_SECONDS - elapsed)
             minutes_elapsed = elapsed / 60.0
 
-            # ── Signal evaluation (T-120s = 780s elapsed) ────────
+            # ── Signal evaluation — from minute 5 onwards, re-evaluate every loop ─
             if (
-                elapsed >= 780
-                and not bot_state.signal_evaluated
+                elapsed >= 300  # T+5min
                 and not bot_state.trade_placed_this_window
             ):
-                logger.info(f"Evaluating signal at T+{elapsed}s...")
                 snap = market_data.snapshot()
                 signal = signal_engine.evaluate(snap, minutes_elapsed)
                 bot_state.last_signal = signal
                 bot_state.signal_evaluated = True
-
-                if signal["direction"]:
-                    logger.info(
-                        f"Signal: {signal['direction']} | conf={signal['confidence']:.2f} | "
-                        f"votes={signal['agreement']}/3"
-                    )
-                else:
-                    logger.info(f"No signal: {signal.get('skip_reason', 'unknown')}")
 
             # ── Trade execution (T-10s = 890s elapsed) ───────────
             if (
