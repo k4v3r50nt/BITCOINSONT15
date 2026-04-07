@@ -90,6 +90,7 @@ class PaperTrader:
         open_price: float,        # BTC price at window open
         token_price: Optional[float] = None,   # pre-fetched from signal
         force_min_bet: bool = False,
+        edge_pct: float = 0.0,    # signal edge % (token_mid - 0.50)
     ) -> Optional[Dict[str, Any]]:
 
         if not PAPER_MODE:
@@ -156,18 +157,19 @@ class PaperTrader:
         )
 
         trade_info = {
-            "id":             trade_id,
-            "direction":      direction,          # "YES" or "NO"
-            "token_price":    token_price,
-            "shares":         shares,
-            "cost_usd":       cost_usd,
-            "fee_usd":        fee,
-            "max_payout":     max_payout,
-            "max_profit":     max_profit,
+            "id":              trade_id,
+            "direction":       direction,
+            "token_price":     token_price,
+            "shares":          shares,
+            "cost_usd":        cost_usd,
+            "fee_usd":         fee,
+            "max_payout":      max_payout,
+            "max_profit":      max_profit,
             "bankroll_before": bankroll_before,
-            "confidence":     confidence,
-            "open_price":     open_price,
-            "window_ts":      self.market_scanner.current_window_ts,
+            "confidence":      confidence,
+            "edge_pct":        edge_pct,           # ← real edge for display
+            "open_price":      open_price,
+            "window_ts":       self.market_scanner.current_window_ts,
         }
 
         self.active_trade_id = trade_id

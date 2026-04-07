@@ -480,12 +480,12 @@ HTML = r"""<!DOCTYPE html>
         <tr>
           <th>VENTANA</th>
           <th>DIR</th>
-          <th>TOKEN PRICE</th>
+          <th>TOKEN $</th>
           <th>EDGE</th>
           <th>RESULTADO</th>
-          <th>P&amp;L</th>
+          <th>GANANCIA</th>
+          <th>P&amp;L NETO</th>
           <th>BANKROLL</th>
-          <th>COSTO</th>
         </tr>
       </thead>
       <tbody id="trades-body">
@@ -650,8 +650,12 @@ function updateMetrics(d) {
   // Win rate
   const wr = d.win_rate || 0;
   document.getElementById('win-rate').textContent = fmt(wr, 1) + '%';
+  const best  = d.best_trade  != null ? '+$' + fmt(d.best_trade,  2) : '—';
+  const worst = d.worst_trade != null ? '-$' + fmt(Math.abs(d.worst_trade), 2) : '—';
   document.getElementById('win-loss').textContent =
-    (d.wins || 0) + 'W / ' + (d.losses || 0) + 'L — ' + (d.total_trades || 0) + ' trades';
+    '✓ ' + (d.wins || 0) + ' wins  ✗ ' + (d.losses || 0) + ' losses' +
+    '  |  ' + (d.total_trades || 0) + ' trades' +
+    '  |  mejor: ' + best + '  peor: ' + worst;
 
   // P&L
   const pnl = d.total_pnl || 0;
@@ -815,37 +819,64 @@ function updateTrades(d) {
     const wStr = t.window_ts
       ? new Date(t.window_ts * 1000).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'})
       : '—';
+
     const dirCls  = t.direction === 'YES' ? 'up' : 'down';
-    const tokenPx = t.token_price != null ? '$' + Number(t.token_price).toFixed(4) : '—';
-    const edge    = t.confidence != null ? '+' + ((0.5 - (t.token_price || 0.5)) * 100).toFixed(1) + '%' : '—';
-    let resStr = '⏳ OPEN';
-    let pnlStr = '—';
-    let pnlCls = 'dim';
-    let brStr  = '—';
-    let rowCls = 'open';
+
+    // TOKEN $ — mid price paid
+    const tokenPx = t.token_price != null
+      ? '$' + Number(t.token_price).toFixed(4)
+      : '—';
+
+    // EDGE — real edge stored on trade; fall back to computing from token_price
+    // New strategy: edge = token_mid - 0.50 (favored side > 0.50)
+    let edgeStr = '—';
+    const ep = t.edge_pct != null ? t.edge_pct : null;
+    if (ep != null) {
+      edgeStr = (ep >= 0 ? '+' : '') + (ep * 100).toFixed(1) + '%';
+    } else if (t.token_price != null) {
+      const computed = (Number(t.token_price) - 0.50) * 100;
+      edgeStr = (computed >= 0 ? '+' : '') + computed.toFixed(1) + '%';
+    }
+    const edgeCls = (ep != null ? ep : 0) >= 0 ? 'up' : 'down';
+
+    let resStr    = '⏳ OPEN';
+    let ganStr    = '—';
+    let ganCls    = 'dim';
+    let pnlStr    = '—';
+    let pnlCls    = 'dim';
+    let brStr     = '—';
+    let rowCls    = 'open';
+
     if (t.resolved) {
       if (t.win) {
         resStr = '✓ WIN';
         rowCls = 'win';
+        // GANANCIA bruta = pnl + cost  (net_payout back into bankroll)
+        const gan = (t.pnl || 0) + (t.cost_usd || 0);
+        ganStr = '+$' + Math.abs(gan).toFixed(2);
+        ganCls = 'pnl-pos';
       } else {
         resStr = '✗ LOSS';
         rowCls = 'loss';
+        ganStr = '—';
       }
       const pnl = t.pnl || 0;
       pnlStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
       pnlCls = pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
-      brStr  = t.bankroll_after != null ? '$' + Number(t.bankroll_after).toFixed(2) : '—';
+      brStr  = t.bankroll_after != null
+        ? '$' + Number(t.bankroll_after).toFixed(2)
+        : '—';
     }
-    const cost = t.cost_usd != null ? '$' + Number(t.cost_usd).toFixed(2) : '—';
+
     return `<tr class="${rowCls}">
       <td>${wStr}</td>
       <td class="${dirCls}">${t.direction || '—'}</td>
       <td class="dim">${tokenPx}</td>
-      <td class="up">${edge}</td>
+      <td class="${edgeCls}">${edgeStr}</td>
       <td>${resStr}</td>
+      <td class="${ganCls}">${ganStr}</td>
       <td class="${pnlCls}">${pnlStr}</td>
       <td>${brStr}</td>
-      <td class="dim">${cost}</td>
     </tr>`;
   }).join('');
 }

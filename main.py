@@ -254,6 +254,7 @@ async def main_trading_loop(
                         open_price       = bot_state.window_open_price,
                         token_price      = signal.get("token_price"),
                         force_min_bet    = signal.get("force_min_bet", False),
+                        edge_pct         = signal.get("edge_pct", 0.0),
                     )
 
                     if trade:
