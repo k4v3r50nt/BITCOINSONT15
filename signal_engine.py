@@ -2,7 +2,7 @@
 BITCOINSONT15 — Signal Engine v4: Mispricing Hunter + Biased Market
 
 Two conditions generate a trade:
-  A) MISPRICING:  implied_ask  = yes_ask + no_ask  < 0.98
+  A) MISPRICING:  implied_ask = yes_ask + no_ask < 0.98
                   (market maker left edge on the table)
   B) BIASED MKT:  any mid price <= 0.44
                   (market prices one side at ≤44% → buying it has +EV)
@@ -13,6 +13,11 @@ Price fetch chain (per token):
   2. Gamma /markets?clob_token_ids= → outcomePrices (mid prices)
      ask estimate = mid + 0.02  (conservative spread)
   3. Default 0.50 / 0.50
+
+Timing gate:
+  - Operates from minute 1.0 to minute 14.5 of each window
+  - Signals between minute 13.0 and 14.5 are flagged as URGENT
+    (main.py uses this to execute immediately instead of waiting)
 """
 
 import json
@@ -34,7 +39,8 @@ BIASED_MID_THRESHOLD   = 0.44   # mid ≤ this → BIASED MARKET trade
 GAMMA_SPREAD_ESTIMATE  = 0.02   # estimated ask spread added to gamma mid prices
 
 TRADE_WINDOW_MIN_START = 1.0    # earliest minute in window to trade
-TRADE_WINDOW_MIN_END   = 14.0   # latest minute
+TRADE_WINDOW_MIN_END   = 14.5   # latest minute (was 14.0 — raised to avoid edge blocks)
+URGENT_SIGNAL_AFTER    = 13.0   # signals after this minute are marked urgent
 
 # Circuit breaker: market stays efficient for this long → min-bet mode
 CB_EFFICIENT_THRESHOLD = 0.98
@@ -51,8 +57,8 @@ GAMMA_BASE = "https://gamma-api.polymarket.com"
 class SignalEngine:
     def __init__(self, scanner, min_confidence: float = 0.0):
         """
-        scanner      — MarketScanner; used only for scanner.tokens {"YES": id, "NO": id}
-        min_confidence — minimum confidence to fire a trade (0.0 = any positive edge)
+        scanner        — MarketScanner; provides scanner.tokens {"YES": id, "NO": id}
+        min_confidence — minimum confidence to fire (0.0 = any positive edge)
         """
         self.scanner        = scanner
         self.min_confidence = min_confidence
@@ -61,8 +67,6 @@ class SignalEngine:
         self._consecutive_wins_with_mispricing: int = 0
         self._last_loss_ts: float = 0.0
         self._session: Optional[aiohttp.ClientSession] = None
-
-        # Track last source used (for logging / debugging)
         self._last_price_source: str = "none"
 
     # ── HTTP session ──────────────────────────────────────────────────────────
@@ -83,7 +87,7 @@ class SignalEngine:
     async def _clob_best_ask(self, token_id: str) -> Optional[float]:
         """
         GET /books?token_id={token_id}
-        Asks are sorted ascending; asks[0] is the cheapest (best ask for buyer).
+        Asks sorted ascending; asks[0] = cheapest = best ask for buyer.
         Returns None on failure.
         """
         session = await self._get_session()
@@ -95,29 +99,33 @@ class SignalEngine:
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status != 200:
-                    logger.debug(f"[Signal] CLOB /books HTTP {resp.status} for {token_id[:8]}…")
+                    logger.debug(
+                        f"[Signal] CLOB /books HTTP {resp.status} "
+                        f"for {token_id[:8]}…"
+                    )
                     return None
                 data = await resp.json()
                 asks = data.get("asks", [])
                 if not asks:
-                    logger.debug(f"[Signal] CLOB /books: empty asks for {token_id[:8]}…")
+                    logger.debug(
+                        f"[Signal] CLOB /books: empty asks for {token_id[:8]}…"
+                    )
                     return None
-                # asks sorted ascending → first element = best ask
                 best = min(asks, key=lambda a: float(a.get("price", 1)))
                 price = float(best["price"])
-                logger.debug(f"[Signal] CLOB best ask for {token_id[:8]}… = {price:.4f}")
+                logger.debug(
+                    f"[Signal] CLOB best ask {token_id[:8]}… = {price:.4f}"
+                )
                 return price
         except Exception as e:
-            logger.warning(f"[Signal] CLOB /books error for {token_id[:8]}…: {e}")
+            logger.warning(f"[Signal] CLOB /books error {token_id[:8]}…: {e}")
             return None
 
-    async def _gamma_prices(
-        self, yes_id: str
-    ) -> Optional[Tuple[float, float]]:
+    async def _gamma_prices(self, yes_id: str) -> Optional[Tuple[float, float]]:
         """
         GET /markets?clob_token_ids={yes_id}
-        Returns (yes_mid, no_mid) or None.
-        These are MID prices — callers must add GAMMA_SPREAD_ESTIMATE.
+        Returns (yes_mid, no_mid) — mid prices, NOT ask prices.
+        Callers must add GAMMA_SPREAD_ESTIMATE to get estimated asks.
         """
         session = await self._get_session()
         try:
@@ -131,7 +139,9 @@ class SignalEngine:
                     logger.debug(f"[Signal] Gamma HTTP {resp.status}")
                     return None
                 data = await resp.json()
-                markets = data if isinstance(data, list) else data.get("markets", [])
+                markets = (
+                    data if isinstance(data, list) else data.get("markets", [])
+                )
                 if not markets:
                     logger.debug("[Signal] Gamma: no markets returned")
                     return None
@@ -140,21 +150,22 @@ class SignalEngine:
                     prices = json.loads(prices)
                 if isinstance(prices, list) and len(prices) >= 2:
                     y, n = float(prices[0]), float(prices[1])
-                    logger.debug(f"[Signal] Gamma mids: YES={y:.4f} NO={n:.4f}")
+                    logger.debug(
+                        f"[Signal] Gamma mids: YES={y:.4f} NO={n:.4f}"
+                    )
                     return y, n
                 return None
         except Exception as e:
             logger.warning(f"[Signal] Gamma error: {e}")
             return None
 
-    async def _fetch_prices(
-        self, yes_id: str, no_id: str
-    ) -> Dict[str, Any]:
+    async def _fetch_prices(self, yes_id: str, no_id: str) -> Dict[str, Any]:
         """
         3-level fallback chain.
-        Returns dict with keys: yes_ask, no_ask, yes_mid, no_mid, source
-          source ∈ {"clob", "gamma", "default"}
-          yes_mid / no_mid are None when source == "clob"
+        Returns:
+          yes_ask, no_ask  — ask prices (real or estimated)
+          yes_mid, no_mid  — mid prices (None when source == "clob")
+          source           — "clob" | "gamma" | "default"
         """
         # ── 1. CLOB /books (real ask prices, two requests) ────────────────────
         yes_ask = await self._clob_best_ask(yes_id)
@@ -163,15 +174,13 @@ class SignalEngine:
         if yes_ask is not None and no_ask is not None:
             self._last_price_source = "clob"
             logger.info(
-                f"[Signal] CLOB asks — YES={yes_ask:.4f} NO={no_ask:.4f} "
-                f"implied={yes_ask+no_ask:.4f}"
+                f"[Signal] CLOB asks: YES={yes_ask:.4f} NO={no_ask:.4f} "
+                f"implied={yes_ask + no_ask:.4f}"
             )
             return {
-                "yes_ask":  yes_ask,
-                "no_ask":   no_ask,
-                "yes_mid":  None,
-                "no_mid":   None,
-                "source":   "clob",
+                "yes_ask": yes_ask, "no_ask": no_ask,
+                "yes_mid": None,    "no_mid": None,
+                "source":  "clob",
             }
 
         # ── 2. Gamma mid prices + spread estimate ─────────────────────────────
@@ -184,25 +193,24 @@ class SignalEngine:
             logger.info(
                 f"[Signal] Gamma mids={yes_mid:.4f}/{no_mid:.4f} "
                 f"→ ask_est={yes_ask_est:.4f}/{no_ask_est:.4f} "
-                f"implied_ask={yes_ask_est+no_ask_est:.4f}"
+                f"implied_ask={yes_ask_est + no_ask_est:.4f}"
             )
             return {
-                "yes_ask":  yes_ask_est,
-                "no_ask":   no_ask_est,
-                "yes_mid":  yes_mid,
-                "no_mid":   no_mid,
-                "source":   "gamma",
+                "yes_ask": yes_ask_est, "no_ask": no_ask_est,
+                "yes_mid": yes_mid,     "no_mid": no_mid,
+                "source":  "gamma",
             }
 
-        # ── 3. Default (both endpoints down) ─────────────────────────────────
-        print("[SIGNAL] PRECIO DEFAULT — todos los endpoints fallaron, usando 0.50/0.50")
+        # ── 3. Default (all endpoints down) ───────────────────────────────────
+        print(
+            "[SIGNAL] PRECIO DEFAULT — todos los endpoints fallaron, "
+            "usando 0.50/0.50"
+        )
         logger.warning("[Signal] All price endpoints failed — using 0.50/0.50 default")
         self._last_price_source = "default"
         return {
-            "yes_ask": 0.50,
-            "no_ask":  0.50,
-            "yes_mid": 0.50,
-            "no_mid":  0.50,
+            "yes_ask": 0.50, "no_ask": 0.50,
+            "yes_mid": 0.50, "no_mid": 0.50,
             "source":  "default",
         }
 
@@ -213,7 +221,11 @@ class SignalEngine:
     ) -> Dict[str, Any]:
         """
         Evaluates whether to trade in the current window minute.
-        Returns signal dict compatible with paper_trader and shared_state.
+        Returns signal dict. Key field: "direction" (None = skip).
+
+        Extra fields added to help main.py:
+          "urgent": True if signal is between URGENT_SIGNAL_AFTER and window end
+          "time_window_pct": how far through the trading window we are (0.0-1.0)
         """
         price = snapshot.get("price", 0)
         delta = snapshot.get("delta_pct", 0.0)
@@ -223,7 +235,7 @@ class SignalEngine:
             f"BTC=${price:,.2f} delta={delta:+.3f}%"
         )
 
-        # ── Resolve token IDs ─────────────────────────────────────────────────
+        # ── Resolve token IDs from scanner ────────────────────────────────────
         tokens = getattr(self.scanner, "tokens", None)
         if not tokens:
             print("[SIGNAL] SKIP — scanner sin tokens aún")
@@ -236,10 +248,10 @@ class SignalEngine:
             return self._skip("missing_token_ids")
 
         # ── Fetch prices ──────────────────────────────────────────────────────
-        p = await self._fetch_prices(yes_id, no_id)
+        p        = await self._fetch_prices(yes_id, no_id)
         yes_ask  = p["yes_ask"]
         no_ask   = p["no_ask"]
-        yes_mid  = p["yes_mid"]   # None when source == "clob"
+        yes_mid  = p["yes_mid"]
         no_mid   = p["no_mid"]
         source   = p["source"]
 
@@ -264,9 +276,7 @@ class SignalEngine:
             f"implied={implied_ask:.4f}"
         )
         if yes_mid is not None:
-            print(
-                f"[SIGNAL] Gamma mids → YES={yes_mid:.4f} NO={no_mid:.4f}"
-            )
+            print(f"[SIGNAL] Gamma mids → YES={yes_mid:.4f} NO={no_mid:.4f}")
         print(
             f"[SIGNAL] Minuto ventana: {minutes_elapsed:.1f} | "
             f"Circuit breaker: {cb_active}"
@@ -274,19 +284,27 @@ class SignalEngine:
 
         # ── Timing gate ───────────────────────────────────────────────────────
         if minutes_elapsed < TRADE_WINDOW_MIN_START:
-            reason = f"too_early_{minutes_elapsed:.1f}min"
+            reason = (
+                f"too_early_{minutes_elapsed:.1f}min"
+                f"<{TRADE_WINDOW_MIN_START}"
+            )
             print(f"[SIGNAL] Edge: — | Decision: {reason}")
             return self._skip(reason, yes_ask=yes_ask, no_ask=no_ask,
                               implied_total=implied_ask)
 
         if minutes_elapsed > TRADE_WINDOW_MIN_END:
-            reason = f"too_late_{minutes_elapsed:.1f}min"
+            reason = (
+                f"too_late_{minutes_elapsed:.1f}min"
+                f">{TRADE_WINDOW_MIN_END}"
+            )
             print(f"[SIGNAL] Edge: — | Decision: {reason}")
             return self._skip(reason, yes_ask=yes_ask, no_ask=no_ask,
                               implied_total=implied_ask)
 
         # Record for CB history
         self._record_implied(implied_ask)
+
+        is_urgent = minutes_elapsed >= URGENT_SIGNAL_AFTER
 
         # ═════════════════════════════════════════════════════════════════════
         # CONDITION A — MISPRICING: implied_ask < IMPLIED_ASK_FLOOR (0.98)
@@ -310,25 +328,20 @@ class SignalEngine:
                     print(
                         f"[SIGNAL] ✓ MISPRICING | {direction} @ {token_price:.4f} "
                         f"edge={edge_pct*100:.1f}% conf={confidence:.2f}"
+                        + (" [URGENT]" if is_urgent else "")
                     )
 
         # ═════════════════════════════════════════════════════════════════════
-        # CONDITION B — BIASED MARKET: any mid ≤ 0.44 (only when Gamma/default)
+        # CONDITION B — BIASED MARKET: any mid ≤ 0.44 (Gamma/default only)
         # ═════════════════════════════════════════════════════════════════════
         signal_b = None
         if yes_mid is not None and no_mid is not None:
-            biased_dir   = None
-            biased_mid   = None
-            biased_ask   = None
+            biased_dir = biased_mid = biased_ask = None
 
             if yes_mid <= BIASED_MID_THRESHOLD:
-                biased_dir = "YES"
-                biased_mid = yes_mid
-                biased_ask = yes_ask
+                biased_dir, biased_mid, biased_ask = "YES", yes_mid, yes_ask
             elif no_mid <= BIASED_MID_THRESHOLD:
-                biased_dir = "NO"
-                biased_mid = no_mid
-                biased_ask = no_ask
+                biased_dir, biased_mid, biased_ask = "NO",  no_mid,  no_ask
 
             if biased_dir is not None and biased_ask < MAX_TOKEN_ASK:
                 edge_pct   = round(0.50 - biased_mid, 4)
@@ -346,12 +359,17 @@ class SignalEngine:
                         f"[SIGNAL] ✓ BIASED_MKT | {biased_dir} "
                         f"mid={biased_mid:.4f} ask={biased_ask:.4f} "
                         f"edge={edge_pct*100:.1f}%"
+                        + (" [URGENT]" if is_urgent else "")
                     )
 
         # ── Select best signal (prefer higher confidence) ─────────────────────
         chosen = None
         if signal_a and signal_b:
-            chosen = signal_a if signal_a["confidence"] >= signal_b["confidence"] else signal_b
+            chosen = (
+                signal_a
+                if signal_a["confidence"] >= signal_b["confidence"]
+                else signal_b
+            )
             print(f"[SIGNAL] Both A+B fired → chose {chosen['reason']}")
         elif signal_a:
             chosen = signal_a
@@ -367,24 +385,28 @@ class SignalEngine:
             return self._skip(reason, yes_ask=yes_ask, no_ask=no_ask,
                               implied_total=implied_ask)
 
-        # ── Build final result ────────────────────────────────────────────────
+        # ── Build result ──────────────────────────────────────────────────────
         direction   = chosen["direction"]
         token_price = chosen["token_price"]
         edge_pct    = chosen["edge_pct"]
         confidence  = chosen["confidence"]
         force_min_bet = cb_active
 
-        ev_per_10 = round((edge_pct / token_price) * 10, 2) if token_price > 0 else 0.0
+        ev_per_10 = (
+            round((edge_pct / token_price) * 10, 2) if token_price > 0 else 0.0
+        )
 
         print(
             f"[SIGNAL] Edge: {edge_pct*100:.2f}% | "
             f"EV=+${ev_per_10:.2f}/10$ | "
             f"Decision: FIRE {direction} ({chosen['reason']})"
+            + (" [URGENT]" if is_urgent else "")
         )
         logger.info(
             f"[Signal] FIRE {direction} | token={token_price:.4f} "
             f"edge={edge_pct*100:.1f}% conf={confidence:.2f} "
-            f"implied={implied_ask:.4f} reason={chosen['reason']}"
+            f"implied={implied_ask:.4f} urgent={is_urgent} "
+            f"reason={chosen['reason']}"
         )
 
         return {
@@ -397,7 +419,8 @@ class SignalEngine:
             "confidence":       confidence,
             "force_min_bet":    force_min_bet,
             "skip_reason":      None,
-            # compat fields
+            "urgent":           is_urgent,
+            # compat fields expected by dashboard / paper_trader
             "strategy_details": {
                 "momentum":       direction,
                 "mean_reversion": None,
@@ -413,7 +436,7 @@ class SignalEngine:
         if had_mispricing:
             self._consecutive_wins_with_mispricing += 1
             logger.info(
-                f"[Signal] Racha mispricing: "
+                f"[Signal] Racha mispricing wins: "
                 f"{self._consecutive_wins_with_mispricing}"
             )
         else:
@@ -431,7 +454,7 @@ class SignalEngine:
     def _pick_cheaper_side(
         self, yes_ask: float, no_ask: float
     ) -> Tuple[Optional[str], Optional[float]]:
-        """Return (direction, price) for the cheaper valid side."""
+        """Return (direction, price) for the cheaper valid side, or (None, None)."""
         yes_ok = yes_ask <= no_ask and yes_ask < MAX_TOKEN_ASK
         no_ok  = no_ask  <  yes_ask and no_ask  < MAX_TOKEN_ASK
         if yes_ok:
@@ -453,21 +476,19 @@ class SignalEngine:
         if len(self._implied_history) < 3:
             return False
         oldest = self._implied_history[0]
-        window_seconds = time.time() - oldest["ts"]
-        if window_seconds < CB_EFFICIENT_MINUTES * 60:
+        if time.time() - oldest["ts"] < CB_EFFICIENT_MINUTES * 60:
             return False
         return all(
-            r["implied"] >= CB_EFFICIENT_THRESHOLD
-            for r in self._implied_history
+            r["implied"] >= CB_EFFICIENT_THRESHOLD for r in self._implied_history
         )
 
     @staticmethod
     def _skip(
         reason: str,
-        yes_ask:      float = 0.0,
-        no_ask:       float = 0.0,
+        yes_ask:       float = 0.0,
+        no_ask:        float = 0.0,
         implied_total: float = 0.0,
-        edge_pct:     float = 0.0,
+        edge_pct:      float = 0.0,
     ) -> Dict[str, Any]:
         return {
             "direction":        None,
@@ -479,6 +500,7 @@ class SignalEngine:
             "confidence":       0.0,
             "force_min_bet":    False,
             "skip_reason":      reason,
+            "urgent":           False,
             "strategy_details": {
                 "momentum":       None,
                 "mean_reversion": None,
