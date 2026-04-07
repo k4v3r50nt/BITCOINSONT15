@@ -1,25 +1,26 @@
 """
-BITCOINSONT15 — Signal Engine v6: Gamma Mid Momentum
+BITCOINSONT15 — Signal Engine v7: Gamma Mid Sweet-Spot
 
-Strategy: follow the market's own signal when it shows a strong bias.
+Strategy: buy the dominant side ONLY when it trades in the sweet spot
+  0.54 ≤ mid ≤ 0.62  →  market is biased but not yet fully priced-in.
 
-  yes_mid + no_mid ≈ 1.00 always (efficient market identity).
-  When one side trades > 0.54 the market is expressing > 54 % confidence
-  in that outcome. We follow that signal — the market has information.
+Rationale:
+  - mid < 0.54  → market neutral, no edge
+  - mid 0.54–0.62 → market is leaning but may be over-correcting → follow
+  - mid > 0.62  → market has already priced the outcome in; paying too much
+                  (e.g. $0.705 means you need to be right >70.5% to profit,
+                   but the market already says 70.5% — no free edge left)
 
-  YES mid > 0.54 → market says BTC likely UP   → buy YES (follow the market)
-  NO  mid > 0.54 → market says BTC likely DOWN → buy NO  (follow the market)
-  Both 0.46–0.54 → market neutral              → SKIP
+  YES mid ∈ [0.54, 0.62] → FIRE YES
+  NO  mid ∈ [0.54, 0.62] → FIRE NO
+  anything else           → SKIP
 
-  Edge  = token_mid − 0.50  (e.g. mid=0.62 → edge=0.12 → 12 %)
-  EV/10 = edge × 10          (e.g. edge=0.12 → +$1.20 per $10 bet)
-
-Edge  = 0.50 - token_mid          (e.g. mid=0.38 → edge=0.12 → 12%)
-EV/10 = (edge / token_mid) * 10   (e.g. mid=0.38 → +$3.16 per $10)
+  Edge  = token_mid − 0.50   (e.g. mid=0.60 → edge=0.10 → 10 %)
+  EV/10 = edge × 10          (e.g. edge=0.10 → +$1.00 per $10 bet)
 
 Price source: Gamma API /markets?clob_token_ids=
   outcomePrices[0] = YES mid, outcomePrices[1] = NO mid
-  (CLOB /books and /midpoints reliably return HTTP 400/401 on cloud IPs)
+  (CLOB /books and /midpoints return HTTP 400/401 on cloud IPs)
 """
 
 import json
@@ -33,9 +34,10 @@ logger = logging.getLogger(__name__)
 
 # ── Strategy parameters ───────────────────────────────────────────────────────
 
-# Fire when the favored side's mid exceeds this — 4 % edge minimum
-FAVOR_THRESHOLD   = 0.54   # mid > this → fire  (edge = 0.54 - 0.50 = 0.04)
-MIN_EDGE_PCT      = 0.04   # 4 % minimum edge (matches threshold exactly)
+# Sweet-spot range: fire only when dominant side is between these two values
+SWEET_SPOT_LOW    = 0.54   # minimum mid to enter  (edge ≥ 4 %)
+SWEET_SPOT_HIGH   = 0.62   # maximum mid to enter  (above this market is saturated)
+MIN_EDGE_PCT      = 0.04   # 4 % minimum edge (= SWEET_SPOT_LOW - 0.50)
 
 # Window timing
 TRADE_MIN_START   = 1.5    # don't trade before minute 1.5
@@ -195,34 +197,55 @@ class SignalEngine:
 
         is_urgent = minutes_elapsed >= URGENT_AFTER
 
-        # ── Momentum / imbalance check ────────────────────────────────────────
+        # ── Sweet-spot check ──────────────────────────────────────────────────
         #
-        #  YES mid > FAVOR_THRESHOLD → market favors UP   → follow → BUY YES
-        #  NO  mid > FAVOR_THRESHOLD → market favors DOWN → follow → BUY NO
-        #  Both between 0.46–0.54   → neutral             → SKIP
+        #  YES mid ∈ [SWEET_SPOT_LOW, SWEET_SPOT_HIGH] → FIRE YES
+        #  NO  mid ∈ [SWEET_SPOT_LOW, SWEET_SPOT_HIGH] → FIRE NO
+        #  If both qualify, pick the higher mid (stronger market signal)
+        #  Outside range on both sides                 → SKIP
         #
         direction = None
         token_mid = None
 
-        if yes_mid > FAVOR_THRESHOLD and yes_mid >= no_mid:
-            direction = "YES"
-            token_mid = yes_mid
-        elif no_mid > FAVOR_THRESHOLD and no_mid > yes_mid:
-            direction = "NO"
-            token_mid = no_mid
+        yes_in_range = SWEET_SPOT_LOW <= yes_mid <= SWEET_SPOT_HIGH
+        no_in_range  = SWEET_SPOT_LOW <= no_mid  <= SWEET_SPOT_HIGH
 
-        # Record edge for circuit breaker (strength of the strongest side)
+        if yes_in_range and no_in_range:
+            # Both in range — follow the stronger signal
+            if yes_mid >= no_mid:
+                direction, token_mid = "YES", yes_mid
+            else:
+                direction, token_mid = "NO",  no_mid
+        elif yes_in_range:
+            direction, token_mid = "YES", yes_mid
+        elif no_in_range:
+            direction, token_mid = "NO",  no_mid
+
+        # Record edge for circuit breaker (strength of dominant side)
         best_edge = max(yes_mid - 0.50, no_mid - 0.50)
         self._record_edge(best_edge)
 
         if direction is None:
+            # Determine why we skipped for a clear log message
+            yes_reason = (
+                "neutral"     if yes_mid < SWEET_SPOT_LOW  else
+                "saturated"   if yes_mid > SWEET_SPOT_HIGH else
+                "in-range"
+            )
+            no_reason = (
+                "neutral"     if no_mid  < SWEET_SPOT_LOW  else
+                "saturated"   if no_mid  > SWEET_SPOT_HIGH else
+                "in-range"
+            )
             reason = (
-                f"neutral yes={yes_mid:.4f} no={no_mid:.4f} "
-                f"ninguno > {FAVOR_THRESHOLD}"
+                f"out_of_range yes={yes_mid:.4f}({yes_reason}) "
+                f"no={no_mid:.4f}({no_reason}) "
+                f"range=[{SWEET_SPOT_LOW},{SWEET_SPOT_HIGH}]"
             )
             print(
-                f"[SIGNAL] SKIP neutral: yes={yes_mid:.4f} no={no_mid:.4f} "
-                f"ninguno > {FAVOR_THRESHOLD}"
+                f"[SIGNAL] SKIP: yes={yes_mid:.4f}({yes_reason}) "
+                f"no={no_mid:.4f}({no_reason}) "
+                f"rango=[{SWEET_SPOT_LOW},{SWEET_SPOT_HIGH}]"
             )
             return self._skip(reason, yes_mid=yes_mid, no_mid=no_mid)
 
