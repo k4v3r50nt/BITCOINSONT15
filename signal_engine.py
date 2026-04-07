@@ -35,9 +35,9 @@ logger = logging.getLogger(__name__)
 # ── Strategy parameters ───────────────────────────────────────────────────────
 
 # Sweet-spot range: fire only when dominant side is between these two values
-SWEET_SPOT_LOW    = 0.54   # minimum mid to enter  (edge ≥ 4 %)
-SWEET_SPOT_HIGH   = 0.62   # maximum mid to enter  (above this market is saturated)
-MIN_EDGE_PCT      = 0.04   # 4 % minimum edge (= SWEET_SPOT_LOW - 0.50)
+SWEET_SPOT_LOW    = 0.52   # minimum mid to enter  (edge ≥ 2 %)
+SWEET_SPOT_HIGH   = 0.64   # maximum mid to enter  (above this market is saturated)
+MIN_EDGE_PCT      = 0.02   # 2 % minimum edge (= SWEET_SPOT_LOW - 0.50)
 
 # Window timing
 TRADE_MIN_START   = 1.5    # don't trade before minute 1.5
@@ -261,7 +261,8 @@ class SignalEngine:
 
         if confidence < self.min_confidence:
             reason = (
-                f"low_confidence_{confidence:.2f}<{self.min_confidence:.2f}"
+                f"neutral_{token_mid:.4f}_not_in_"
+                f"{SWEET_SPOT_LOW}-{SWEET_SPOT_HIGH}"
             )
             print(f"[SIGNAL] Edge: {edge_pct*100:.1f}% | Decision: {reason}")
             return self._skip(reason, yes_mid=yes_mid, no_mid=no_mid)
