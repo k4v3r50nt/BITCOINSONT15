@@ -43,6 +43,7 @@ class SharedState:
         self.no_ask: Optional[float] = None
         self.implied_total: float = 0.0
         self.edge_pct: float = 0.0
+        self.token_price: float = 0.0
         self.token_side: Optional[str] = None
 
         # Window state
@@ -125,6 +126,7 @@ class SharedState:
             self.no_ask = signal.get("no_ask")
             self.implied_total = signal.get("implied_total", 0.0)
             self.edge_pct = signal.get("edge_pct", 0.0)
+            self.token_price = signal.get("token_price", 0.0)
             self.token_side = signal.get("direction")
 
     def update_window(self, window_ts: int, slug: str, time_remaining: int, progress: float):
@@ -170,6 +172,7 @@ class SharedState:
             self.no_ask = None
             self.implied_total = 0.0
             self.edge_pct = 0.0
+            self.token_price = 0.0
             self.token_side = None
             self.active_trade = None
             # Reset chart history for the new window
@@ -204,6 +207,7 @@ class SharedState:
                 "no_ask": self.no_ask,
                 "implied_total": self.implied_total,
                 "edge_pct": self.edge_pct,
+                "token_price": self.token_price,
                 "token_side": self.token_side,
                 # Window
                 "window_ts": self.window_ts,

@@ -294,14 +294,24 @@ HTML = r"""<!DOCTYPE html>
   }
   .misprice-row .mp-label { opacity: 0.6; }
   .misprice-row .mp-val   { font-weight: bold; }
-  .implied-low    { color: var(--green); border-color: #003311 !important; background: #001a08; }
+  .implied-low    { color: var(--red);    border-color: #330000 !important; background: #1a0000; }
   .implied-mid    { color: var(--yellow); border-color: #332200 !important; background: #1a1000; }
-  .implied-high   { opacity: 0.5; }
+  .implied-high   { color: var(--green);  border-color: #003311 !important; background: #001a08; }
   .edge-positive  { color: var(--green); }
   .edge-zero      { color: #555; }
   .buying-yes     { color: var(--green); font-weight: bold; }
   .buying-no      { color: var(--red);   font-weight: bold; }
   .buying-skip    { color: #555; }
+  .signal-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12px;
+    text-align: center;
+    opacity: 0.75;
+  }
+  .signal-meta .meta-token { color: var(--yellow); letter-spacing: 1px; }
+  .signal-meta .meta-ev    { color: var(--green);  letter-spacing: 1px; }
 
   .cb-status { font-size: 12px; padding: 4px 8px; border: 1px solid; text-align: center; }
   .cb-status.ok     { color: var(--green2); border-color: #003311; }
@@ -422,6 +432,10 @@ HTML = r"""<!DOCTYPE html>
       </div>
 
       <div class="signal-dir skip" id="signal-dir">── SKIP</div>
+      <div class="signal-meta" id="signal-meta">
+        <span class="meta-token" id="meta-token"></span>
+        <span class="meta-ev"    id="meta-ev"></span>
+      </div>
 
       <div>
         <div class="conf-label">CONFIANZA</div>
@@ -615,10 +629,11 @@ function updateMetrics(d) {
   priceEl.className = 'card-value ' + colorClass(d.delta_pct);
   document.getElementById('btc-vol').textContent = 'VOL ' + fmt(d.volume, 3) + ' BTC';
 
-  // Implied Total
+  // Implied Total card
   const impliedEl = document.getElementById('implied-total-val');
   const it = d.implied_total || 0;
   impliedEl.textContent = it > 0 ? it.toFixed(4) : '—';
+  // rojo <0.94 | amarillo 0.94-0.97 | verde ≥0.97
   if (it > 0 && it < 0.94) {
     impliedEl.className = 'card-value implied-low';
   } else if (it >= 0.94 && it < 0.97) {
@@ -720,6 +735,20 @@ function updateSignal(d) {
     sigEl.className = 'signal-dir skip';
   }
 
+  // Token price + EV below signal-dir
+  const tokenPriceActive = d.token_price || 0;
+  const edgePctActive    = d.edge_pct    || 0;
+  const metaToken = document.getElementById('meta-token');
+  const metaEv    = document.getElementById('meta-ev');
+  if (dir && tokenPriceActive > 0) {
+    const evPer10 = edgePctActive > 0 ? (edgePctActive / tokenPriceActive * 10) : 0;
+    metaToken.textContent = 'Token: $' + tokenPriceActive.toFixed(4);
+    metaEv.textContent    = 'EV: +$' + evPer10.toFixed(2) + ' por $10';
+  } else {
+    metaToken.textContent = '';
+    metaEv.textContent    = '';
+  }
+
   // Confidence
   const conf = (d.signal_confidence || 0) * 100;
   document.getElementById('conf-fill').style.width = conf + '%';
@@ -736,9 +765,11 @@ function updateSignal(d) {
   itEl.textContent = itV > 0 ? itV.toFixed(4) : '—';
   const implRow = document.getElementById('mp-implied');
   if (itV > 0 && itV < 0.94) {
-    implRow.className = 'misprice-row implied-low';
+    implRow.className = 'misprice-row implied-low';   // rojo
   } else if (itV >= 0.94 && itV < 0.97) {
-    implRow.className = 'misprice-row implied-mid';
+    implRow.className = 'misprice-row implied-mid';   // amarillo
+  } else if (itV >= 0.97) {
+    implRow.className = 'misprice-row implied-high';  // verde
   } else {
     implRow.className = 'misprice-row';
   }
