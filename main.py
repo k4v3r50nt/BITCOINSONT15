@@ -1,10 +1,11 @@
 """
 BITCOINSONT15 — BTC Up/Down 15-minute paper trading bot for Polymarket.
 
-Trade execution flow (fixed):
-  - Every 5 seconds: evaluate signal
-  - If FIRE and time_remaining > 30s → execute trade IMMEDIATELY
-  - Do NOT wait until T+890s; that caused late signals to be overwritten by SKIPs
+Trading loop timing:
+  - Signal evaluated every 30 seconds (was 5s — reduced to avoid Gamma rate limits)
+  - On FIRE: execute trade immediately (do NOT wait for end-of-window)
+  - Safety net: skip execution if < 30 seconds remain in window
+  - Once trade placed this window → stop evaluating until next window
 """
 
 import asyncio
@@ -36,15 +37,17 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-# signal_engine logs at DEBUG so every decision is visible in bot.log
 logging.getLogger("signal_engine").setLevel(logging.DEBUG)
 logger = logging.getLogger("main")
 
-# Safety buffer: don't place trades in the last N seconds of a window
+# Seconds before window end below which we refuse to place a new trade
 MIN_SECONDS_REMAINING = 30
 
+# How often the trading loop evaluates the signal (seconds)
+SIGNAL_EVAL_INTERVAL = 30
 
-# ── Global state ─────────────────────────────────────────────────────────────
+
+# ── Bot state ────────────────────────────────────────────────────────────────
 
 class BotState:
     def __init__(self):
@@ -53,11 +56,13 @@ class BotState:
         self.window_open_price        = 0.0
         self.trade_placed_this_window = False
         self.active_trade             = None
-        # last_signal: stores the most recent FIRE signal (never overwritten by SKIP)
+        # last_signal: holds the most recent FIRE (never overwritten by a SKIP)
         self.last_signal              = None
+        # tracks when we last ran signal evaluation
+        self._last_eval_ts: float     = 0.0
 
 
-# ── Dashboard / shared-state refresh loop ────────────────────────────────────
+# ── Dashboard / shared-state refresh (1 Hz) ───────────────────────────────────
 
 async def dashboard_loop(
     dashboard:    Dashboard,
@@ -67,21 +72,18 @@ async def dashboard_loop(
     bot_state:    BotState,
     shared_state: SharedState,
 ):
-    """Updates terminal dashboard and web shared state every second."""
     while bot_state.running:
         try:
-            snap         = market_data.snapshot()
-            risk_status  = risk_manager.status()
+            snap        = market_data.snapshot()
+            risk_status = risk_manager.status()
 
             dashboard.update_from_market(snap)
             dashboard.update_from_scanner(scanner)
             dashboard.update_from_risk(risk_status)
-
             if bot_state.last_signal:
                 dashboard.update_from_signal(bot_state.last_signal)
             dashboard.update(active_trade=bot_state.active_trade)
 
-            # ── Push to web shared state ──────────────────────────────────
             shared_state.update_price(
                 price             = snap.get("price", 0),
                 window_open_price = snap.get("window_open_price", 0),
@@ -94,15 +96,15 @@ async def dashboard_loop(
                 vwap              = snap.get("vwap"),
             )
             shared_state.update_window(
-                window_ts     = scanner.current_window_ts,
-                slug          = scanner.current_slug,
-                time_remaining= scanner.time_remaining(),
-                progress      = scanner.window_progress(),
+                window_ts      = scanner.current_window_ts,
+                slug           = scanner.current_slug,
+                time_remaining = scanner.time_remaining(),
+                progress       = scanner.window_progress(),
             )
             shared_state.update_risk(
-                bankroll   = risk_status["bankroll"],
-                cb_active  = risk_status["circuit_breaker_active"],
-                cb_remaining = risk_status["circuit_breaker_remaining"],
+                bankroll       = risk_status["bankroll"],
+                cb_active      = risk_status["circuit_breaker_active"],
+                cb_remaining   = risk_status["circuit_breaker_remaining"],
             )
             shared_state.update_active_trade(bot_state.active_trade)
             if bot_state.last_signal:
@@ -116,14 +118,13 @@ async def dashboard_loop(
         await asyncio.sleep(1)
 
 
-# ── Stats refresh loop ────────────────────────────────────────────────────────
+# ── Stats refresh (every 10 s) ────────────────────────────────────────────────
 
 async def stats_refresh_loop(
     dashboard:    Dashboard,
     bot_state:    BotState,
     shared_state: SharedState,
 ):
-    """Refreshes DB stats every 10 seconds (terminal + web)."""
     while bot_state.running:
         try:
             stats  = database.get_stats()
@@ -151,6 +152,8 @@ async def main_trading_loop(
 
     while bot_state.running:
         try:
+            now = time.time()
+
             # ── Window detection ──────────────────────────────────────────────
             from market_scanner import current_window_ts
             wts = current_window_ts()
@@ -161,16 +164,16 @@ async def main_trading_loop(
                     f"({datetime.fromtimestamp(wts).strftime('%H:%M:%S')}) ==="
                 )
 
-                # ── Resolve previous window trade ─────────────────────────────
+                # Resolve previous window trade
                 if bot_state.active_trade:
                     logger.info("Resolving previous window trade…")
                     result = await paper_trader.resolve_trade(
                         bot_state.window_open_price
                     )
                     if result:
-                        had_mispricing = bot_state.window_open_price > 0
+                        had_signal = True
                         if result["win"]:
-                            signal_engine.record_win(had_mispricing)
+                            signal_engine.record_win(had_signal)
                         else:
                             signal_engine.record_loss()
                         bot_state.active_trade = None
@@ -178,14 +181,15 @@ async def main_trading_loop(
                         stats = database.get_stats()
                         await telegram.daily_summary(stats, risk_manager.bankroll)
 
-                # ── Reset window state ────────────────────────────────────────
+                # Reset window state
                 bot_state.current_window_ts        = wts
                 bot_state.trade_placed_this_window = False
                 bot_state.last_signal              = None
+                bot_state._last_eval_ts            = 0.0   # force eval on first loop
 
                 await scanner.refresh()
 
-                # Wait up to 15s for market data to have a price
+                # Wait up to 15 s for market data price
                 for _ in range(15):
                     if market_data.current_price > 0:
                         break
@@ -199,47 +203,57 @@ async def main_trading_loop(
                     f"Window open price: ${bot_state.window_open_price:,.2f}"
                 )
 
-            # ── Timing within window ──────────────────────────────────────────
-            elapsed         = int(time.time()) - wts
+            # ── Compute timing ────────────────────────────────────────────────
+            elapsed         = int(now) - wts
             time_remaining  = max(0, WINDOW_SECONDS - elapsed)
             minutes_elapsed = elapsed / 60.0
 
-            # ── Signal evaluation ─────────────────────────────────────────────
-            # Start from T+1min (signal_engine has its own internal timing gate).
-            # Evaluate every loop (every 5s) until a trade is placed.
-            if elapsed >= 60 and not bot_state.trade_placed_this_window:
+            # ── Signal evaluation every SIGNAL_EVAL_INTERVAL seconds ──────────
+            # Only evaluate:
+            #   • after minute 3 (signal_engine has its own gate anyway)
+            #   • when no trade has been placed yet this window
+            #   • when the eval interval has elapsed
+            secs_since_eval = now - bot_state._last_eval_ts
+            should_eval = (
+                elapsed >= 60                           # minimum T+1min
+                and not bot_state.trade_placed_this_window
+                and secs_since_eval >= SIGNAL_EVAL_INTERVAL
+            )
+
+            if should_eval:
+                bot_state._last_eval_ts = now
                 snap   = market_data.snapshot()
                 signal = await signal_engine.evaluate(snap, minutes_elapsed)
 
-                # Only update last_signal when we have an actual FIRE.
-                # Never overwrite a FIRE with a SKIP — that was the original bug.
+                # ── Preserve FIRE, never overwrite with SKIP ──────────────────
+                # This was the original bug: re-evaluation at T+14.0 would
+                # overwrite the T+13.9 FIRE with a "too_late" SKIP, so the
+                # trade was never placed.
                 if signal.get("direction") is not None:
-                    bot_state.last_signal = signal
+                    bot_state.last_signal = signal          # FIRE → always save
                 elif bot_state.last_signal is None:
-                    # Store SKIPs only when there's no prior signal (for dashboard)
-                    bot_state.last_signal = signal
+                    bot_state.last_signal = signal          # first result for dashboard
 
                 # ── Execute immediately on FIRE ───────────────────────────────
-                # Condition: signal fired AND enough time left in window
                 if (
                     signal.get("direction") is not None
                     and time_remaining > MIN_SECONDS_REMAINING
                     and not bot_state.trade_placed_this_window
                 ):
-                    urgency_tag = " [URGENT]" if signal.get("urgent") else ""
+                    urgency = " [URGENT]" if signal.get("urgent") else ""
                     logger.info(
                         f"FIRE @ T+{minutes_elapsed:.1f}min "
-                        f"({time_remaining}s remaining){urgency_tag} → "
-                        f"executing {signal['direction']} trade now"
+                        f"({time_remaining}s remaining){urgency} → "
+                        f"executing {signal['direction']} immediately"
                     )
 
                     trade = await paper_trader.execute_trade(
-                        direction       = signal["direction"],
-                        confidence      = signal["confidence"],
-                        strategy_details= signal.get("strategy_details", {}),
-                        open_price      = bot_state.window_open_price,
-                        token_price     = signal.get("token_price"),
-                        force_min_bet   = signal.get("force_min_bet", False),
+                        direction        = signal["direction"],
+                        confidence       = signal["confidence"],
+                        strategy_details = signal.get("strategy_details", {}),
+                        open_price       = bot_state.window_open_price,
+                        token_price      = signal.get("token_price"),
+                        force_min_bet    = signal.get("force_min_bet", False),
                     )
 
                     if trade:
@@ -249,7 +263,8 @@ async def main_trading_loop(
                         logger.info(
                             f"Trade placed: #{trade['id']} "
                             f"dir={trade['direction']} "
-                            f"token=${signal.get('token_price', 0):.4f} "
+                            f"token_mid=${signal.get('token_price', 0):.4f} "
+                            f"edge={signal.get('edge_pct', 0)*100:.1f}% "
                             f"cost=${trade.get('cost_usd', 0):.2f} "
                             f"@ T+{minutes_elapsed:.1f}min"
                         )
@@ -259,10 +274,11 @@ async def main_trading_loop(
                     and time_remaining <= MIN_SECONDS_REMAINING
                 ):
                     logger.warning(
-                        f"FIRE signal @ T+{minutes_elapsed:.1f}min but only "
-                        f"{time_remaining}s remaining — skipping (too late to execute)"
+                        f"FIRE @ T+{minutes_elapsed:.1f}min but only "
+                        f"{time_remaining}s left — too late to execute"
                     )
 
+            # Sleep 5 s between loop ticks (dashboard / window detection still fast)
             await asyncio.sleep(5)
 
         except asyncio.CancelledError:
@@ -279,10 +295,9 @@ async def main():
     logger.info("  BITCOINSONT15 — BTC Paper Trading Bot")
     logger.info("=" * 60)
 
-    # ── Init DB ───────────────────────────────────────────────────────────────
     database.init_db()
 
-    # Resume bankroll from last session if available
+    # Resume bankroll from last session
     last_trades = database.get_last_n_trades(1)
     if last_trades and last_trades[0].get("bankroll_after"):
         current_bankroll = last_trades[0]["bankroll_after"]
@@ -291,18 +306,18 @@ async def main():
         current_bankroll = INITIAL_BANKROLL
         logger.info(f"Starting fresh with bankroll: ${current_bankroll:.2f}")
 
-    # ── Init components ───────────────────────────────────────────────────────
-    shared_state   = SharedState(initial_bankroll=INITIAL_BANKROLL)
-    scanner        = MarketScanner()
-    market_data    = MarketData()
-    signal_engine  = SignalEngine(scanner=scanner, min_confidence=MIN_CONFIDENCE)
-    risk_manager   = RiskManager(current_bankroll, MAX_POSITION_PCT)
-    paper_trader   = PaperTrader(risk_manager, scanner)
-    dashboard      = Dashboard(INITIAL_BANKROLL)
-    telegram       = TelegramAlerter()
-    bot_state      = BotState()
+    # Initialise components
+    shared_state  = SharedState(initial_bankroll=INITIAL_BANKROLL)
+    scanner       = MarketScanner()
+    market_data   = MarketData()
+    signal_engine = SignalEngine(scanner=scanner, min_confidence=MIN_CONFIDENCE)
+    risk_manager  = RiskManager(current_bankroll, MAX_POSITION_PCT)
+    paper_trader  = PaperTrader(risk_manager, scanner)
+    dashboard     = Dashboard(INITIAL_BANKROLL)
+    telegram      = TelegramAlerter()
+    bot_state     = BotState()
 
-    # Start web dashboard (background thread, non-blocking)
+    # Web dashboard (background daemon thread)
     start_web_dashboard(shared_state)
 
     # Start async components
@@ -311,25 +326,23 @@ async def main():
     await paper_trader.start()
     await telegram.start()
 
-    # Seed dashboard with initial DB data
-    initial_stats  = database.get_stats()
-    recent_trades  = database.get_last_n_trades(10)
+    # Seed dashboard
+    initial_stats = database.get_stats()
+    recent_trades = database.get_last_n_trades(10)
     dashboard.update_trades(initial_stats, recent_trades)
     dashboard.update(bankroll=current_bankroll)
     shared_state.update_stats(initial_stats, recent_trades)
     shared_state.update_risk(current_bankroll, False, 0)
-
     dashboard.start()
 
-    # ── Graceful shutdown ─────────────────────────────────────────────────────
-    def shutdown(sig, frame):
+    # Graceful shutdown on SIGINT / SIGTERM
+    def _shutdown(sig, frame):
         logger.info("Shutdown signal received")
         bot_state.running = False
 
-    signal.signal(signal.SIGINT,  shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT,  _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
 
-    # ── Create asyncio tasks ──────────────────────────────────────────────────
     tasks = [
         asyncio.create_task(
             dashboard_loop(
