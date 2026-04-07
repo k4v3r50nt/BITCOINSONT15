@@ -117,7 +117,8 @@ def get_last_n_trades(n: int = 8) -> List[Dict[str, Any]]:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        SELECT id, window_ts, direction, confidence, win, pnl, bankroll_after, cost_usd, resolved
+        SELECT id, window_ts, direction, confidence, win, pnl,
+               bankroll_after, cost_usd, resolved, token_price
         FROM trades
         ORDER BY id DESC
         LIMIT ?
@@ -127,15 +128,16 @@ def get_last_n_trades(n: int = 8) -> List[Dict[str, Any]]:
     result = []
     for row in rows:
         result.append({
-            "id": row[0],
-            "window_ts": row[1],
-            "direction": row[2],
-            "confidence": row[3],
-            "win": row[4],
-            "pnl": row[5],
-            "bankroll_after": row[6],
-            "cost_usd": row[7],
-            "resolved": row[8],
+            "id":            row[0],
+            "window_ts":     row[1],
+            "direction":     row[2],
+            "confidence":    row[3],
+            "win":           row[4],
+            "pnl":           row[5],
+            "bankroll_after":row[6],
+            "cost_usd":      row[7],
+            "resolved":      row[8],
+            "token_price":   row[9],
         })
     return result
 

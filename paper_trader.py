@@ -19,6 +19,7 @@ from typing import Optional, Dict, Any
 import aiohttp
 
 import database
+import state_manager
 from config import PAPER_MODE
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,17 @@ class PaperTrader:
         self.active_trade    = trade_info
 
         # Deduct cost from bankroll immediately
-        self.risk_manager.update_bankroll(round(bankroll_before - cost_usd, 4))
+        new_bankroll = round(bankroll_before - cost_usd, 4)
+        self.risk_manager.update_bankroll(new_bankroll)
+
+        # Persist bankroll so restarts resume from here
+        stats = database.get_stats()
+        state_manager.save_state(
+            bankroll     = new_bankroll,
+            total_trades = stats.get("total", 0),
+            wins         = stats.get("wins", 0),
+            losses       = stats.get("losses", 0),
+        )
 
         logger.info(
             f"[PAPER] Trade #{trade_id}: {direction} token @ {token_price:.4f} | "
@@ -243,6 +254,15 @@ class PaperTrader:
         )
 
         self.risk_manager.update_bankroll(bankroll_after)
+
+        # Persist resolved bankroll
+        stats = database.get_stats()
+        state_manager.save_state(
+            bankroll     = bankroll_after,
+            total_trades = stats.get("total", 0),
+            wins         = stats.get("wins", 0),
+            losses       = stats.get("losses", 0),
+        )
 
         result = {
             "id":           self.active_trade_id,

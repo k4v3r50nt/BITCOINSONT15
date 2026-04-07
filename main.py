@@ -16,6 +16,7 @@ import time
 from datetime import datetime
 
 import database
+import state_manager
 from config import INITIAL_BANKROLL, MIN_CONFIDENCE, MAX_POSITION_PCT, WINDOW_SECONDS
 from market_scanner import MarketScanner
 from market_data import MarketData
@@ -298,14 +299,18 @@ async def main():
 
     database.init_db()
 
-    # Resume bankroll from last session
-    last_trades = database.get_last_n_trades(1)
-    if last_trades and last_trades[0].get("bankroll_after"):
-        current_bankroll = last_trades[0]["bankroll_after"]
-        logger.info(f"Resuming with bankroll: ${current_bankroll:.2f}")
+    # Resume bankroll: env var CURRENT_BANKROLL → state.json → INITIAL_BANKROLL
+    current_bankroll = state_manager.load_bankroll(INITIAL_BANKROLL)
+
+    # Determine source label for banner
+    import os as _os
+    if _os.environ.get("CURRENT_BANKROLL"):
+        _src = "CURRENT_BANKROLL env var (Railway)"
+    elif _os.path.exists(state_manager.STATE_FILE):
+        _src = f"state.json ({state_manager.STATE_FILE})"
     else:
-        current_bankroll = INITIAL_BANKROLL
-        logger.info(f"Starting fresh with bankroll: ${current_bankroll:.2f}")
+        _src = "INITIAL_BANKROLL (fresh start)"
+    state_manager.print_startup_banner(current_bankroll, _src)
 
     # Initialise components
     shared_state  = SharedState(initial_bankroll=INITIAL_BANKROLL)
