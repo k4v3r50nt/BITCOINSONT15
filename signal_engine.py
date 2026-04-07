@@ -1,16 +1,18 @@
 """
-BITCOINSONT15 — Signal Engine v5: Gamma Mid Imbalance
+BITCOINSONT15 — Signal Engine v6: Gamma Mid Momentum
 
-Strategy: trade when Polymarket's own mid-price shows a clear bias.
+Strategy: follow the market's own signal when it shows a strong bias.
 
   yes_mid + no_mid ≈ 1.00 always (efficient market identity).
-  When one side is priced < 0.46, the market is saying that outcome
-  has < 46% probability — buying it at that price has +EV if true
-  probability is actually ≥ 50%.
+  When one side trades > 0.54 the market is expressing > 54 % confidence
+  in that outcome. We follow that signal — the market has information.
 
-  YES mid <= 0.485 → market says BTC likely UP  → buy YES (market undervalues it)
-  NO  mid <= 0.485 → market says BTC likely DOWN → buy NO  (market undervalues it)
-  Both > 0.485     → market neutral              → SKIP
+  YES mid > 0.54 → market says BTC likely UP   → buy YES (follow the market)
+  NO  mid > 0.54 → market says BTC likely DOWN → buy NO  (follow the market)
+  Both 0.46–0.54 → market neutral              → SKIP
+
+  Edge  = token_mid − 0.50  (e.g. mid=0.62 → edge=0.12 → 12 %)
+  EV/10 = edge × 10          (e.g. edge=0.12 → +$1.20 per $10 bet)
 
 Edge  = 0.50 - token_mid          (e.g. mid=0.38 → edge=0.12 → 12%)
 EV/10 = (edge / token_mid) * 10   (e.g. mid=0.38 → +$3.16 per $10)
@@ -31,9 +33,9 @@ logger = logging.getLogger(__name__)
 
 # ── Strategy parameters ───────────────────────────────────────────────────────
 
-# Trade when either mid is at or below this — 1.5 % edge minimum
-EDGE_THRESHOLD    = 0.485  # mid <= this → fire  (edge = 0.50 - 0.485 = 0.015)
-MIN_EDGE_PCT      = 0.015  # 1.5 % minimum edge
+# Fire when the favored side's mid exceeds this — 4 % edge minimum
+FAVOR_THRESHOLD   = 0.54   # mid > this → fire  (edge = 0.54 - 0.50 = 0.04)
+MIN_EDGE_PCT      = 0.04   # 4 % minimum edge (matches threshold exactly)
 
 # Window timing
 TRADE_MIN_START   = 1.5    # don't trade before minute 1.5
@@ -193,43 +195,43 @@ class SignalEngine:
 
         is_urgent = minutes_elapsed >= URGENT_AFTER
 
-        # ── Edge / imbalance check ────────────────────────────────────────────
+        # ── Momentum / imbalance check ────────────────────────────────────────
         #
-        #  YES mid <= EDGE_THRESHOLD → market undervalues YES → BUY YES
-        #  NO  mid <= EDGE_THRESHOLD → market undervalues NO  → BUY NO
-        #  Both 0.47–0.53            → neutral               → SKIP
+        #  YES mid > FAVOR_THRESHOLD → market favors UP   → follow → BUY YES
+        #  NO  mid > FAVOR_THRESHOLD → market favors DOWN → follow → BUY NO
+        #  Both between 0.46–0.54   → neutral             → SKIP
         #
-        direction  = None
-        token_mid  = None
+        direction = None
+        token_mid = None
 
-        if yes_mid <= EDGE_THRESHOLD and yes_mid <= no_mid:
+        if yes_mid > FAVOR_THRESHOLD and yes_mid >= no_mid:
             direction = "YES"
             token_mid = yes_mid
-        elif no_mid <= EDGE_THRESHOLD and no_mid < yes_mid:
+        elif no_mid > FAVOR_THRESHOLD and no_mid > yes_mid:
             direction = "NO"
             token_mid = no_mid
 
-        # Record edge for circuit breaker (use best available edge)
-        best_edge = max(0.50 - yes_mid, 0.50 - no_mid)
+        # Record edge for circuit breaker (strength of the strongest side)
+        best_edge = max(yes_mid - 0.50, no_mid - 0.50)
         self._record_edge(best_edge)
 
         if direction is None:
             reason = (
                 f"neutral yes={yes_mid:.4f} no={no_mid:.4f} "
-                f"threshold={EDGE_THRESHOLD}"
+                f"ninguno > {FAVOR_THRESHOLD}"
             )
             print(
                 f"[SIGNAL] SKIP neutral: yes={yes_mid:.4f} no={no_mid:.4f} "
-                f"ninguno <= {EDGE_THRESHOLD}"
+                f"ninguno > {FAVOR_THRESHOLD}"
             )
             return self._skip(reason, yes_mid=yes_mid, no_mid=no_mid)
 
-        edge_pct   = round(0.50 - token_mid, 4)
+        edge_pct   = round(token_mid - 0.50, 4)            # how strongly market favors this side
         confidence = round(min(1.0, edge_pct / 0.10), 4)   # 10% edge → conf=1.0
 
         if edge_pct < MIN_EDGE_PCT:
             reason = (
-                f"edge_too_small_{edge_pct*100:.1f}%<{MIN_EDGE_PCT*100:.0f}%"
+                f"signal_weak_{edge_pct*100:.1f}%<{MIN_EDGE_PCT*100:.0f}%"
             )
             print(f"[SIGNAL] Edge: {edge_pct*100:.1f}% | Decision: {reason}")
             return self._skip(reason, yes_mid=yes_mid, no_mid=no_mid)
@@ -242,7 +244,7 @@ class SignalEngine:
             return self._skip(reason, yes_mid=yes_mid, no_mid=no_mid)
 
         force_min_bet = cb_active
-        ev_per_10     = round((edge_pct / token_mid) * 10, 2) if token_mid > 0 else 0.0
+        ev_per_10     = round(edge_pct * 10, 2)   # edge × $10 bet
 
         print(
             f"[SIGNAL] Edge: {edge_pct*100:.1f}% | "
