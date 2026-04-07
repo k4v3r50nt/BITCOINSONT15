@@ -147,6 +147,12 @@ async def main_trading_loop(
                     logger.info("Resolving previous window trade...")
                     result = await paper_trader.resolve_trade(bot_state.window_open_price)
                     if result:
+                        # Notify signal engine for streak tracking
+                        had_mispricing = bot_state.window_open_price > 0
+                        if result["win"]:
+                            signal_engine.record_win(had_mispricing)
+                        else:
+                            signal_engine.record_loss()
                         bot_state.active_trade = None
                         await telegram.trade_resolved(result, risk_manager.bankroll)
                         stats = database.get_stats()
@@ -177,13 +183,13 @@ async def main_trading_loop(
             time_remaining = max(0, WINDOW_SECONDS - elapsed)
             minutes_elapsed = elapsed / 60.0
 
-            # ── Signal evaluation — from minute 5 onwards, re-evaluate every loop ─
+            # ── Signal evaluation — from minute 3 onwards, re-evaluate every loop ─
             if (
-                elapsed >= 300  # T+5min
+                elapsed >= 180  # T+3min (matches signal_engine timing gate)
                 and not bot_state.trade_placed_this_window
             ):
                 snap = market_data.snapshot()
-                signal = signal_engine.evaluate(snap, minutes_elapsed)
+                signal = await signal_engine.evaluate(snap, minutes_elapsed)
                 bot_state.last_signal = signal
                 bot_state.signal_evaluated = True
 
@@ -202,6 +208,8 @@ async def main_trading_loop(
                     confidence=signal["confidence"],
                     strategy_details=signal.get("strategy_details", {}),
                     open_price=bot_state.window_open_price,
+                    token_price=signal.get("token_price"),
+                    force_min_bet=signal.get("force_min_bet", False),
                 )
 
                 if trade:
@@ -244,7 +252,7 @@ async def main():
     shared_state = SharedState(initial_bankroll=INITIAL_BANKROLL)
     scanner = MarketScanner()
     market_data = MarketData()
-    signal_engine = SignalEngine(min_confidence=MIN_CONFIDENCE)
+    signal_engine = SignalEngine(scanner=scanner, min_confidence=MIN_CONFIDENCE)
     risk_manager = RiskManager(current_bankroll, MAX_POSITION_PCT)
     paper_trader = PaperTrader(risk_manager, scanner)
     dashboard = Dashboard(INITIAL_BANKROLL)
