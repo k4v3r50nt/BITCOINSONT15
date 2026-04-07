@@ -110,19 +110,15 @@ class PaperTrader:
             logger.warning(f"Invalid token price {token_price} — skipping")
             return None
 
-        # ── Position sizing ───────────────────────────────────────────────────
-        if force_min_bet:
-            bet_usd = MIN_BET_USD
-            logger.info("[PaperTrader] Force min bet (market too efficient today)")
-        else:
-            # Mispricing win streak: scale up slightly (max 2×) for consecutive wins
-            streak  = getattr(self.risk_manager, "_mispricing_streak", 0)
-            scale   = min(2.0, 1.0 + streak * 0.25)
-            bet_usd = self.risk_manager.size_bet(confidence, token_price)
-            if bet_usd is None:
-                logger.info("[PaperTrader] Risk manager blocked trade (circuit breaker?)")
-                return None
-            bet_usd = min(bet_usd * scale, self.risk_manager.bankroll * 0.10)
+        # ── Position sizing (delegates all CB/floor logic to RiskManager) ─────
+        bet_usd = self.risk_manager.size_bet(
+            confidence    = confidence,
+            token_price   = token_price,
+            force_min_bet = force_min_bet,
+        )
+        if bet_usd is None:
+            logger.info("[PaperTrader] RiskManager blocked trade — ver logs [RISK]")
+            return None
 
         bet_usd = max(MIN_BET_USD, round(bet_usd, 2))
 
