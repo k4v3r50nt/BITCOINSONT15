@@ -210,6 +210,14 @@ class SignalEngine:
         yes_in_range = SWEET_SPOT_LOW <= yes_mid <= SWEET_SPOT_HIGH
         no_in_range  = SWEET_SPOT_LOW <= no_mid  <= SWEET_SPOT_HIGH
 
+        # Explicit diagnostic — shows exactly what is being compared
+        print(
+            f"[SIGNAL] Range check: "
+            f"YES={yes_mid:.4f} in_range={yes_in_range} | "
+            f"NO={no_mid:.4f} in_range={no_in_range} | "
+            f"window=[{SWEET_SPOT_LOW},{SWEET_SPOT_HIGH}]"
+        )
+
         if yes_in_range and no_in_range:
             # Both in range — follow the stronger signal
             if yes_mid >= no_mid:
@@ -252,17 +260,16 @@ class SignalEngine:
         edge_pct   = round(token_mid - 0.50, 4)            # how strongly market favors this side
         confidence = round(min(1.0, edge_pct / 0.10), 4)   # 10% edge → conf=1.0
 
+        # Note: the sweet-spot range [SWEET_SPOT_LOW, SWEET_SPOT_HIGH] is the
+        # primary filter. We do NOT apply a min_confidence gate here — that
+        # would silently reject valid in-range tokens (e.g. NO=0.555 has
+        # confidence=0.55 which fails MIN_CONFIDENCE=0.60 from old env var).
+        # The range check above is sufficient.
+
         if edge_pct < MIN_EDGE_PCT:
             reason = (
-                f"signal_weak_{edge_pct*100:.1f}%<{MIN_EDGE_PCT*100:.0f}%"
-            )
-            print(f"[SIGNAL] Edge: {edge_pct*100:.1f}% | Decision: {reason}")
-            return self._skip(reason, yes_mid=yes_mid, no_mid=no_mid)
-
-        if confidence < self.min_confidence:
-            reason = (
-                f"neutral_{token_mid:.4f}_not_in_"
-                f"{SWEET_SPOT_LOW}-{SWEET_SPOT_HIGH}"
+                f"signal_weak_{edge_pct*100:.1f}%<{MIN_EDGE_PCT*100:.0f}% "
+                f"token={token_mid:.4f}"
             )
             print(f"[SIGNAL] Edge: {edge_pct*100:.1f}% | Decision: {reason}")
             return self._skip(reason, yes_mid=yes_mid, no_mid=no_mid)
