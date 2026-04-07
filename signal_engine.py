@@ -8,9 +8,9 @@ Strategy: trade when Polymarket's own mid-price shows a clear bias.
   has < 46% probability — buying it at that price has +EV if true
   probability is actually ≥ 50%.
 
-  YES mid <= 0.46 → market says BTC likely UP  → buy YES (market undervalues it)
-  NO  mid <= 0.46 → market says BTC likely DOWN → buy NO  (market undervalues it)
-  Both 0.47–0.53  → market neutral              → SKIP
+  YES mid <= 0.485 → market says BTC likely UP  → buy YES (market undervalues it)
+  NO  mid <= 0.485 → market says BTC likely DOWN → buy NO  (market undervalues it)
+  Both > 0.485     → market neutral              → SKIP
 
 Edge  = 0.50 - token_mid          (e.g. mid=0.38 → edge=0.12 → 12%)
 EV/10 = (edge / token_mid) * 10   (e.g. mid=0.38 → +$3.16 per $10)
@@ -31,12 +31,12 @@ logger = logging.getLogger(__name__)
 
 # ── Strategy parameters ───────────────────────────────────────────────────────
 
-# Trade when either mid is at or below this — 4 % edge minimum
-EDGE_THRESHOLD    = 0.46   # mid <= this → fire  (edge = 0.50 - 0.46 = 0.04)
-MIN_EDGE_PCT      = 0.04   # 4 % minimum edge
+# Trade when either mid is at or below this — 1.5 % edge minimum
+EDGE_THRESHOLD    = 0.485  # mid <= this → fire  (edge = 0.50 - 0.485 = 0.015)
+MIN_EDGE_PCT      = 0.015  # 1.5 % minimum edge
 
 # Window timing
-TRADE_MIN_START   = 3.0    # don't trade before minute 3  (market settling)
+TRADE_MIN_START   = 1.5    # don't trade before minute 1.5
 TRADE_MIN_END     = 13.5   # don't trade after minute 13.5 (too close to resolve)
 URGENT_AFTER      = 12.0   # flag signal as urgent after this minute
 
@@ -218,7 +218,10 @@ class SignalEngine:
                 f"neutral yes={yes_mid:.4f} no={no_mid:.4f} "
                 f"threshold={EDGE_THRESHOLD}"
             )
-            print(f"[SIGNAL] Edge: — | Decision: SKIP ({reason})")
+            print(
+                f"[SIGNAL] SKIP neutral: yes={yes_mid:.4f} no={no_mid:.4f} "
+                f"ninguno <= {EDGE_THRESHOLD}"
+            )
             return self._skip(reason, yes_mid=yes_mid, no_mid=no_mid)
 
         edge_pct   = round(0.50 - token_mid, 4)
