@@ -284,19 +284,24 @@ HTML = r"""<!DOCTYPE html>
   }
   .conf-pct { font-size: 20px; font-weight: bold; margin-top: 4px; }
 
-  .strat-row { display: flex; flex-direction: column; gap: 5px; }
-  .strat {
+  .mispricing-rows { display: flex; flex-direction: column; gap: 5px; }
+  .misprice-row {
     display: flex;
     justify-content: space-between;
     font-size: 12px;
     padding: 3px 6px;
     border: 1px solid #111;
   }
-  .strat .name { opacity: 0.6; }
-  .strat .vote { font-weight: bold; }
-  .strat.voted-up   { border-color: #003311; background: #001a08; }
-  .strat.voted-down { border-color: #330000; background: #1a0000; }
-  .strat.voted-none { opacity: 0.4; }
+  .misprice-row .mp-label { opacity: 0.6; }
+  .misprice-row .mp-val   { font-weight: bold; }
+  .implied-low    { color: var(--green); border-color: #003311 !important; background: #001a08; }
+  .implied-mid    { color: var(--yellow); border-color: #332200 !important; background: #1a1000; }
+  .implied-high   { opacity: 0.5; }
+  .edge-positive  { color: var(--green); }
+  .edge-zero      { color: #555; }
+  .buying-yes     { color: var(--green); font-weight: bold; }
+  .buying-no      { color: var(--red);   font-weight: bold; }
+  .buying-skip    { color: #555; }
 
   .cb-status { font-size: 12px; padding: 4px 8px; border: 1px solid; text-align: center; }
   .cb-status.ok     { color: var(--green2); border-color: #003311; }
@@ -383,9 +388,9 @@ HTML = r"""<!DOCTYPE html>
       <div class="card-sub" id="btc-vol">VOL —</div>
     </div>
     <div class="card">
-      <div class="card-label">Delta Ventana</div>
-      <div class="card-value" id="delta-val">0.00%</div>
-      <div class="card-sub" id="delta-1min">1min: —</div>
+      <div class="card-label">IMPLIED TOTAL</div>
+      <div class="card-value" id="implied-total-val">—</div>
+      <div class="card-sub" id="implied-total-sub">YES — / NO —</div>
     </div>
     <div class="card">
       <div class="card-label">Win Rate</div>
@@ -426,18 +431,26 @@ HTML = r"""<!DOCTYPE html>
         <div class="conf-pct" id="conf-pct">0%</div>
       </div>
 
-      <div class="strat-row" id="strat-rows">
-        <div class="strat voted-none" id="strat-momentum">
-          <span class="name">Momentum</span>
-          <span class="vote dim">—</span>
+      <div class="mispricing-rows" id="mispricing-rows">
+        <div class="misprice-row" id="mp-yes">
+          <span class="mp-label">YES Ask</span>
+          <span class="mp-val" id="mp-yes-val">—</span>
         </div>
-        <div class="strat voted-none" id="strat-meanrev">
-          <span class="name">Mean Rev</span>
-          <span class="vote dim">—</span>
+        <div class="misprice-row" id="mp-no">
+          <span class="mp-label">NO Ask</span>
+          <span class="mp-val" id="mp-no-val">—</span>
         </div>
-        <div class="strat voted-none" id="strat-macd">
-          <span class="name">MACD Cross</span>
-          <span class="vote dim">—</span>
+        <div class="misprice-row" id="mp-implied">
+          <span class="mp-label">Implied Total</span>
+          <span class="mp-val" id="mp-implied-val">—</span>
+        </div>
+        <div class="misprice-row" id="mp-edge">
+          <span class="mp-label">Edge</span>
+          <span class="mp-val edge-zero" id="mp-edge-val">—</span>
+        </div>
+        <div class="misprice-row" id="mp-buying">
+          <span class="mp-label">Comprando</span>
+          <span class="mp-val buying-skip" id="mp-buying-val">SKIP</span>
         </div>
       </div>
 
@@ -453,7 +466,8 @@ HTML = r"""<!DOCTYPE html>
         <tr>
           <th>VENTANA</th>
           <th>DIR</th>
-          <th>CONF</th>
+          <th>TOKEN PRICE</th>
+          <th>EDGE</th>
           <th>RESULTADO</th>
           <th>P&amp;L</th>
           <th>BANKROLL</th>
@@ -461,7 +475,7 @@ HTML = r"""<!DOCTYPE html>
         </tr>
       </thead>
       <tbody id="trades-body">
-        <tr><td colspan="7" class="dim" style="text-align:center;padding:20px">Sin trades aún</td></tr>
+        <tr><td colspan="8" class="dim" style="text-align:center;padding:20px">Sin trades aún</td></tr>
       </tbody>
     </table>
   </div>
@@ -601,14 +615,22 @@ function updateMetrics(d) {
   priceEl.className = 'card-value ' + colorClass(d.delta_pct);
   document.getElementById('btc-vol').textContent = 'VOL ' + fmt(d.volume, 3) + ' BTC';
 
-  // Delta
-  const deltaEl = document.getElementById('delta-val');
-  const dp = d.delta_pct || 0;
-  const dUSD = (d.price || 0) * Math.abs(dp) / 100;
-  deltaEl.textContent = sign(dp) + '$' + fmt(dUSD) + ' (' + sign(dp) + fmt(dp, 2) + '%)';
-  deltaEl.className = 'card-value ' + colorClass(dp);
-  const d1 = d.delta_1min || 0;
-  document.getElementById('delta-1min').textContent = '1min: ' + sign(d1) + fmt(d1, 3) + '%';
+  // Implied Total
+  const impliedEl = document.getElementById('implied-total-val');
+  const it = d.implied_total || 0;
+  impliedEl.textContent = it > 0 ? it.toFixed(4) : '—';
+  if (it > 0 && it < 0.94) {
+    impliedEl.className = 'card-value implied-low';
+  } else if (it >= 0.94 && it < 0.97) {
+    impliedEl.className = 'card-value implied-mid';
+  } else if (it >= 0.97) {
+    impliedEl.className = 'card-value implied-high';
+  } else {
+    impliedEl.className = 'card-value dim';
+  }
+  const yesA = d.yes_ask != null ? '$' + Number(d.yes_ask).toFixed(4) : '—';
+  const noA  = d.no_ask  != null ? '$' + Number(d.no_ask).toFixed(4)  : '—';
+  document.getElementById('implied-total-sub').textContent = 'YES ' + yesA + ' / NO ' + noA;
 
   // Win rate
   const wr = d.win_rate || 0;
@@ -687,11 +709,11 @@ function updateSignal(d) {
   // Signal direction
   const dir = d.signal_direction;
   const sigEl = document.getElementById('signal-dir');
-  if (dir === 'UP') {
-    sigEl.textContent = '⬆  UP';
+  if (dir === 'YES') {
+    sigEl.textContent = '✓  YES';
     sigEl.className = 'signal-dir up';
-  } else if (dir === 'DOWN') {
-    sigEl.textContent = '⬇  DOWN';
+  } else if (dir === 'NO') {
+    sigEl.textContent = '✓  NO';
     sigEl.className = 'signal-dir down';
   } else {
     sigEl.textContent = '──  SKIP';
@@ -703,10 +725,40 @@ function updateSignal(d) {
   document.getElementById('conf-fill').style.width = conf + '%';
   document.getElementById('conf-pct').textContent = conf.toFixed(0) + '%';
 
-  // Strategies
-  renderStrat('strat-momentum', 'Momentum',   d.strategy_momentum);
-  renderStrat('strat-meanrev',  'Mean Rev',   d.strategy_mean_rev);
-  renderStrat('strat-macd',     'MACD Cross', d.strategy_macd);
+  // Mispricing Hunter rows
+  const yesAsk = d.yes_ask != null ? '$' + Number(d.yes_ask).toFixed(4) : '—';
+  const noAsk  = d.no_ask  != null ? '$' + Number(d.no_ask).toFixed(4)  : '—';
+  document.getElementById('mp-yes-val').textContent = yesAsk;
+  document.getElementById('mp-no-val').textContent  = noAsk;
+
+  const itV = d.implied_total || 0;
+  const itEl = document.getElementById('mp-implied-val');
+  itEl.textContent = itV > 0 ? itV.toFixed(4) : '—';
+  const implRow = document.getElementById('mp-implied');
+  if (itV > 0 && itV < 0.94) {
+    implRow.className = 'misprice-row implied-low';
+  } else if (itV >= 0.94 && itV < 0.97) {
+    implRow.className = 'misprice-row implied-mid';
+  } else {
+    implRow.className = 'misprice-row';
+  }
+
+  const edgeEl = document.getElementById('mp-edge-val');
+  const ep = d.edge_pct || 0;
+  edgeEl.textContent = ep > 0 ? '+' + (ep * 100).toFixed(1) + '%' : (ep !== 0 ? (ep * 100).toFixed(1) + '%' : '—');
+  edgeEl.className = ep > 0 ? 'mp-val edge-positive' : 'mp-val edge-zero';
+
+  const buyEl = document.getElementById('mp-buying-val');
+  if (dir === 'YES') {
+    buyEl.textContent = '✓ YES';
+    buyEl.className = 'mp-val buying-yes';
+  } else if (dir === 'NO') {
+    buyEl.textContent = '✓ NO';
+    buyEl.className = 'mp-val buying-no';
+  } else {
+    buyEl.textContent = 'SKIP';
+    buyEl.className = 'mp-val buying-skip';
+  }
 
   // Circuit breaker
   const cbEl = document.getElementById('cb-status');
@@ -720,40 +772,21 @@ function updateSignal(d) {
   }
 }
 
-function renderStrat(id, label, vote) {
-  const el = document.getElementById(id);
-  const voteSpan = el.querySelector('.vote');
-  const nameSpan = el.querySelector('.name');
-  nameSpan.textContent = label;
-  if (vote === 'UP') {
-    voteSpan.textContent = '✓ UP';
-    voteSpan.className = 'vote up';
-    el.className = 'strat voted-up';
-  } else if (vote === 'DOWN') {
-    voteSpan.textContent = '✓ DOWN';
-    voteSpan.className = 'vote down';
-    el.className = 'strat voted-down';
-  } else {
-    voteSpan.textContent = '—';
-    voteSpan.className = 'vote dim';
-    el.className = 'strat voted-none';
-  }
-}
-
 // ── Trades table update ───────────────────────────────────────────────────────
 function updateTrades(d) {
   const trades = d.trades_list || [];
   const tbody = document.getElementById('trades-body');
   if (!trades.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="dim" style="text-align:center;padding:20px">Sin trades aún</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="dim" style="text-align:center;padding:20px">Sin trades aún</td></tr>';
     return;
   }
   tbody.innerHTML = trades.map(t => {
     const wStr = t.window_ts
       ? new Date(t.window_ts * 1000).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'})
       : '—';
-    const dirCls  = t.direction === 'UP' ? 'up' : 'down';
-    const conf    = ((t.confidence || 0) * 100).toFixed(0) + '%';
+    const dirCls  = t.direction === 'YES' ? 'up' : 'down';
+    const tokenPx = t.token_price != null ? '$' + Number(t.token_price).toFixed(4) : '—';
+    const edge    = t.confidence != null ? '+' + ((0.5 - (t.token_price || 0.5)) * 100).toFixed(1) + '%' : '—';
     let resStr = '⏳ OPEN';
     let pnlStr = '—';
     let pnlCls = 'dim';
@@ -776,7 +809,8 @@ function updateTrades(d) {
     return `<tr class="${rowCls}">
       <td>${wStr}</td>
       <td class="${dirCls}">${t.direction || '—'}</td>
-      <td>${conf}</td>
+      <td class="dim">${tokenPx}</td>
+      <td class="up">${edge}</td>
       <td>${resStr}</td>
       <td class="${pnlCls}">${pnlStr}</td>
       <td>${brStr}</td>

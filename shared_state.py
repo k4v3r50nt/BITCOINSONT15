@@ -38,6 +38,13 @@ class SharedState:
         self.strategy_macd: Optional[str] = None
         self.skip_reason: Optional[str] = None
 
+        # Mispricing Hunter fields
+        self.yes_ask: Optional[float] = None
+        self.no_ask: Optional[float] = None
+        self.implied_total: float = 0.0
+        self.edge_pct: float = 0.0
+        self.token_side: Optional[str] = None
+
         # Window state
         self.window_ts: int = 0
         self.current_slug: str = "—"
@@ -113,6 +120,12 @@ class SharedState:
             self.strategy_mean_rev = details.get("mean_reversion")
             self.strategy_macd = details.get("macd_cross")
             self.skip_reason = signal.get("skip_reason")
+            # Mispricing Hunter fields
+            self.yes_ask = signal.get("yes_ask")
+            self.no_ask = signal.get("no_ask")
+            self.implied_total = signal.get("implied_total", 0.0)
+            self.edge_pct = signal.get("edge_pct", 0.0)
+            self.token_side = signal.get("direction")
 
     def update_window(self, window_ts: int, slug: str, time_remaining: int, progress: float):
         with self._lock:
@@ -153,6 +166,11 @@ class SharedState:
             self.strategy_mean_rev = None
             self.strategy_macd = None
             self.skip_reason = None
+            self.yes_ask = None
+            self.no_ask = None
+            self.implied_total = 0.0
+            self.edge_pct = 0.0
+            self.token_side = None
             self.active_trade = None
             # Reset chart history for the new window
             ts_ms = int(time.time() * 1000)
@@ -182,6 +200,11 @@ class SharedState:
                 "strategy_mean_rev": self.strategy_mean_rev,
                 "strategy_macd": self.strategy_macd,
                 "skip_reason": self.skip_reason,
+                "yes_ask": self.yes_ask,
+                "no_ask": self.no_ask,
+                "implied_total": self.implied_total,
+                "edge_pct": self.edge_pct,
+                "token_side": self.token_side,
                 # Window
                 "window_ts": self.window_ts,
                 "current_slug": self.current_slug,
