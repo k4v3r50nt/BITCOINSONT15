@@ -26,9 +26,16 @@ def init_db():
             strategies TEXT NOT NULL,
             open_price REAL NOT NULL,
             close_price REAL,
-            resolved INTEGER DEFAULT 0
+            resolved INTEGER DEFAULT 0,
+            edge_pct REAL DEFAULT 0.0
         )
     """)
+    # Migration: add edge_pct to existing databases
+    try:
+        c.execute("ALTER TABLE trades ADD COLUMN edge_pct REAL DEFAULT 0.0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -44,17 +51,18 @@ def save_trade(
     confidence: float,
     strategies: str,
     open_price: float,
+    edge_pct: float = 0.0,
 ) -> int:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         INSERT INTO trades
         (timestamp, window_ts, direction, token_price, shares, cost_usd, fee_usd,
-         bankroll_before, confidence, strategies, open_price, resolved)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+         bankroll_before, confidence, strategies, open_price, resolved, edge_pct)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
     """, (
         time.time(), window_ts, direction, token_price, shares, cost_usd, fee_usd,
-        bankroll_before, confidence, strategies, open_price
+        bankroll_before, confidence, strategies, open_price, edge_pct
     ))
     trade_id = c.lastrowid
     conn.commit()
@@ -118,7 +126,7 @@ def get_last_n_trades(n: int = 8) -> List[Dict[str, Any]]:
     c = conn.cursor()
     c.execute("""
         SELECT id, window_ts, direction, confidence, win, pnl,
-               bankroll_after, cost_usd, resolved, token_price
+               bankroll_after, cost_usd, resolved, token_price, edge_pct
         FROM trades
         ORDER BY id DESC
         LIMIT ?
@@ -138,6 +146,7 @@ def get_last_n_trades(n: int = 8) -> List[Dict[str, Any]]:
             "cost_usd":      row[7],
             "resolved":      row[8],
             "token_price":   row[9],
+            "edge_pct":      row[10] or 0.0,
         })
     return result
 

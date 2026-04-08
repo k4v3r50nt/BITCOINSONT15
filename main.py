@@ -10,6 +10,7 @@ Trading loop timing:
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import time
@@ -18,7 +19,7 @@ from datetime import datetime
 import database
 import state_manager
 from config import INITIAL_BANKROLL, MIN_CONFIDENCE, MAX_POSITION_PCT, WINDOW_SECONDS
-from market_scanner import MarketScanner
+from market_scanner import MarketScanner, current_window_ts
 from market_data import MarketData
 from signal_engine import SignalEngine
 from risk_manager import RiskManager
@@ -156,7 +157,6 @@ async def main_trading_loop(
             now = time.time()
 
             # ── Window detection ──────────────────────────────────────────────
-            from market_scanner import current_window_ts
             wts = current_window_ts()
 
             if wts != bot_state.current_window_ts:
@@ -303,10 +303,9 @@ async def main():
     current_bankroll = state_manager.load_bankroll(INITIAL_BANKROLL)
 
     # Determine source label for banner
-    import os as _os
-    if _os.environ.get("CURRENT_BANKROLL"):
+    if os.environ.get("CURRENT_BANKROLL"):
         _src = "CURRENT_BANKROLL env var (Railway)"
-    elif _os.path.exists(state_manager.STATE_FILE):
+    elif os.path.exists(state_manager.STATE_FILE):
         _src = f"state.json ({state_manager.STATE_FILE})"
     else:
         _src = "INITIAL_BANKROLL (fresh start)"

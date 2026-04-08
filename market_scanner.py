@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 import aiohttp
 import logging
@@ -46,7 +47,6 @@ def extract_tokens(event: Dict[str, Any]) -> Optional[Dict[str, str]]:
     token_ids = market.get("clobTokenIds", "")
 
     # outcomes and clobTokenIds may be JSON strings or lists
-    import json
     if isinstance(outcomes, str):
         try:
             outcomes = json.loads(outcomes)
@@ -260,10 +260,9 @@ class MarketScanner:
                 if not markets:
                     return {"yes_ask": None, "no_ask": None}
                 market = markets[0]
-                import json as _json
                 prices = market.get("outcomePrices", "[]")
                 if isinstance(prices, str):
-                    prices = _json.loads(prices)
+                    prices = json.loads(prices)
                 if isinstance(prices, list) and len(prices) >= 2:
                     return {
                         "yes_ask": float(prices[0]),

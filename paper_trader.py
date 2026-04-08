@@ -13,14 +13,16 @@ EV example: buy YES at $0.44, fair win_rate = 50%
 
 import asyncio
 import logging
+import os
 import time
 from typing import Optional, Dict, Any
 
 import aiohttp
+import requests
 
 import database
 import state_manager
-from config import PAPER_MODE
+from config import PAPER_MODE, RAILWAY_TOKEN, RAILWAY_SERVICE_ID, RAILWAY_ENVIRONMENT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,60 @@ KRAKEN_URL  = "https://api.kraken.com/0/public/Ticker"
 MEMPOOL_URL = "https://mempool.space/api/v1/prices"
 
 MIN_BET_USD = 2.50
+
+
+def _railway_post_sync(new_bankroll: float) -> None:
+    """
+    Synchronous HTTP call to Railway GraphQL API.
+    Called via asyncio.to_thread — never call directly from async code.
+    """
+    if not RAILWAY_TOKEN or not RAILWAY_SERVICE_ID:
+        return
+
+    query = """
+        mutation variableUpsert($input: VariableUpsertInput!) {
+            variableUpsert(input: $input)
+        }
+    """
+    variables = {
+        "input": {
+            "serviceId":     RAILWAY_SERVICE_ID,
+            "environmentId": RAILWAY_ENVIRONMENT_ID,
+            "name":          "CURRENT_BANKROLL",
+            "value":         f"{new_bankroll:.2f}",
+        }
+    }
+    try:
+        resp = requests.post(
+            "https://backboard.railway.app/graphql/v2",
+            headers={
+                "Authorization": f"Bearer {RAILWAY_TOKEN}",
+                "Content-Type":  "application/json",
+            },
+            json={"query": query, "variables": variables},
+            timeout=8,
+        )
+        if resp.status_code == 200 and not resp.json().get("errors"):
+            print(f"[STATE] Bankroll actualizado en Railway: ${new_bankroll:.2f}")
+            logger.info(f"[STATE] Railway CURRENT_BANKROLL → ${new_bankroll:.2f}")
+        else:
+            logger.warning(
+                f"[STATE] Railway update failed: HTTP {resp.status_code} "
+                f"body={resp.text[:200]}"
+            )
+    except Exception as e:
+        logger.warning(f"[STATE] Railway update error: {e}")
+
+
+def _update_railway_bankroll(new_bankroll: float) -> None:
+    """
+    Fire-and-forget Railway update.
+    Schedules the sync HTTP call in the thread pool — does NOT block the
+    asyncio event loop.  Call from async code without await.
+    """
+    if not RAILWAY_TOKEN or not RAILWAY_SERVICE_ID:
+        return
+    asyncio.create_task(asyncio.to_thread(_railway_post_sync, new_bankroll))
 
 
 async def fetch_btc_close(session: aiohttp.ClientSession) -> Optional[float]:
@@ -141,16 +197,17 @@ class PaperTrader:
         bankroll_before = self.risk_manager.bankroll
 
         trade_id = database.save_trade(
-            window_ts    = self.market_scanner.current_window_ts,
-            direction    = direction,
-            token_price  = token_price,
-            shares       = shares,
-            cost_usd     = cost_usd,
-            fee_usd      = fee,
+            window_ts       = self.market_scanner.current_window_ts,
+            direction       = direction,
+            token_price     = token_price,
+            shares          = shares,
+            cost_usd        = cost_usd,
+            fee_usd         = fee,
             bankroll_before = bankroll_before,
-            confidence   = confidence,
-            strategies   = strategies_str,
-            open_price   = open_price,
+            confidence      = confidence,
+            strategies      = strategies_str,
+            open_price      = open_price,
+            edge_pct        = edge_pct,
         )
 
         trade_info = {
@@ -176,7 +233,7 @@ class PaperTrader:
         new_bankroll = round(bankroll_before - cost_usd, 4)
         self.risk_manager.update_bankroll(new_bankroll)
 
-        # Persist bankroll so restarts resume from here
+        # Persist bankroll locally (state.json)
         stats = database.get_stats()
         state_manager.save_state(
             bankroll     = new_bankroll,
@@ -184,6 +241,9 @@ class PaperTrader:
             wins         = stats.get("wins", 0),
             losses       = stats.get("losses", 0),
         )
+
+        # Persist bankroll remotely (Railway env var — survives redeploys)
+        _update_railway_bankroll(new_bankroll)
 
         logger.info(
             f"[PAPER] Trade #{trade_id}: {direction} token @ {token_price:.4f} | "
@@ -251,7 +311,7 @@ class PaperTrader:
 
         self.risk_manager.update_bankroll(bankroll_after)
 
-        # Persist resolved bankroll
+        # Persist resolved bankroll locally (state.json)
         stats = database.get_stats()
         state_manager.save_state(
             bankroll     = bankroll_after,
@@ -259,6 +319,9 @@ class PaperTrader:
             wins         = stats.get("wins", 0),
             losses       = stats.get("losses", 0),
         )
+
+        # Persist resolved bankroll remotely (Railway env var — survives redeploys)
+        _update_railway_bankroll(bankroll_after)
 
         result = {
             "id":           self.active_trade_id,

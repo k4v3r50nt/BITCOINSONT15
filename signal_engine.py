@@ -2,17 +2,17 @@
 BITCOINSONT15 — Signal Engine v7: Gamma Mid Sweet-Spot
 
 Strategy: buy the dominant side ONLY when it trades in the sweet spot
-  0.54 ≤ mid ≤ 0.62  →  market is biased but not yet fully priced-in.
+  0.52 ≤ mid ≤ 0.64  →  market is biased but not yet fully priced-in.
 
 Rationale:
-  - mid < 0.54  → market neutral, no edge
-  - mid 0.54–0.62 → market is leaning but may be over-correcting → follow
-  - mid > 0.62  → market has already priced the outcome in; paying too much
+  - mid < 0.52  → market neutral, no edge
+  - mid 0.52–0.64 → market is leaning but may be over-correcting → follow
+  - mid > 0.64  → market has already priced the outcome in; paying too much
                   (e.g. $0.705 means you need to be right >70.5% to profit,
                    but the market already says 70.5% — no free edge left)
 
-  YES mid ∈ [0.54, 0.62] → FIRE YES
-  NO  mid ∈ [0.54, 0.62] → FIRE NO
+  YES mid ∈ [0.52, 0.64] → FIRE YES
+  NO  mid ∈ [0.52, 0.64] → FIRE NO
   anything else           → SKIP
 
   Edge  = token_mid − 0.50   (e.g. mid=0.60 → edge=0.10 → 10 %)
@@ -41,7 +41,7 @@ MIN_EDGE_PCT      = 0.02   # 2 % minimum edge (= SWEET_SPOT_LOW - 0.50)
 
 # Window timing
 TRADE_MIN_START   = 1.5    # don't trade before minute 1.5
-TRADE_MIN_END     = 13.5   # don't trade after minute 13.5 (too close to resolve)
+TRADE_MIN_END     = 14.8   # don't trade after minute 14.8 (too close to resolve)
 URGENT_AFTER      = 12.0   # flag signal as urgent after this minute
 
 # Circuit breaker: market stays "efficient" this long → min-bet mode
